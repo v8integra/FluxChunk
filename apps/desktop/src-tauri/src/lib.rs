@@ -463,6 +463,64 @@ fn close_collection(state: tauri::State<AppState>) {
 }
 
 #[derive(Debug, Serialize)]
+struct FindingDto {
+    severity: String,
+    rule: String,
+    message: String,
+    snippet: String,
+}
+
+impl From<&fluxchunk_engine::security::Finding> for FindingDto {
+    fn from(f: &fluxchunk_engine::security::Finding) -> Self {
+        FindingDto {
+            severity: match f.severity {
+                fluxchunk_engine::security::Severity::Critical => "critical",
+                fluxchunk_engine::security::Severity::Warning => "warning",
+            }
+            .to_string(),
+            rule: f.rule.clone(),
+            message: f.message.clone(),
+            snippet: f.snippet.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RequestFindingsDto {
+    request_name: String,
+    findings: Vec<FindingDto>,
+}
+
+/// Spec section 8's dialog 1 ("Import summary... Cancel or Scan &
+/// Continue"): counts plus, since the scan already ran, whatever it
+/// found. The frontend decides whether to show dialog 2 based on whether
+/// `security_findings` is empty.
+#[derive(Debug, Serialize)]
+struct ImportPreview {
+    name: String,
+    request_count: usize,
+    parse_warnings: Vec<String>,
+    security_findings: Vec<RequestFindingsDto>,
+}
+
+fn preview_of(imported: &import::ImportedCollection) -> ImportPreview {
+    let security_findings = import::scan_imported_collection(imported)
+        .into_iter()
+        .map(|(request_name, findings)| RequestFindingsDto {
+            request_name,
+            findings: findings.iter().map(FindingDto::from).collect(),
+        })
+        .collect();
+
+    ImportPreview {
+        name: imported.name.clone(),
+        request_count: imported.requests.len(),
+        parse_warnings: imported.warnings.clone(),
+        security_findings,
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct ImportSummary {
     name: String,
     /// Where it actually landed -- `<parent_dir>/<slugified name>` -- so
@@ -473,7 +531,11 @@ struct ImportSummary {
     warnings: Vec<String>,
 }
 
-fn finish_import(imported: import::ImportedCollection, parent_dir: &str) -> Result<ImportSummary, String> {
+fn commit_import(mut imported: import::ImportedCollection, parent_dir: &str, skip_flagged: bool) -> Result<ImportSummary, String> {
+    if skip_flagged {
+        import::strip_flagged_scripts(&mut imported);
+    }
+
     let slug = import::slugify(&imported.name);
     let dest = PathBuf::from(parent_dir).join(if slug.is_empty() { "imported-collection".to_string() } else { slug });
     import::write_imported_collection(&imported, &dest).map_err(|e| e.to_string())?;
@@ -486,24 +548,41 @@ fn finish_import(imported: import::ImportedCollection, parent_dir: &str) -> Resu
     })
 }
 
-/// Imports a Postman Collection v2.1 JSON export into a new collection
-/// folder under `parent_dir` (spec section 5: "Import: Postman
-/// collections, OpenAPI specs" -- explicitly without the security
-/// scanning from section 8, a separate later step).
+/// Parses a Postman Collection v2.1 JSON export and runs the security
+/// scan (spec section 8) without writing anything -- dialog 1's data.
 #[tauri::command]
-fn import_postman_collection(source_path: String, parent_dir: String) -> Result<ImportSummary, String> {
+fn preview_postman_import(source_path: String) -> Result<ImportPreview, String> {
     let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
     let imported = import::postman::import_postman_collection(&json).map_err(|e| e.to_string())?;
-    finish_import(imported, &parent_dir)
+    Ok(preview_of(&imported))
 }
 
 /// Same, for an OpenAPI 3.x or Swagger 2.0 JSON document. YAML specs
 /// aren't supported yet -- see the module docs on `fluxchunk_engine::import::openapi`.
 #[tauri::command]
-fn import_openapi_spec(source_path: String, parent_dir: String) -> Result<ImportSummary, String> {
+fn preview_openapi_import(source_path: String) -> Result<ImportPreview, String> {
     let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
     let imported = import::openapi::import_openapi_spec(&json).map_err(|e| e.to_string())?;
-    finish_import(imported, &parent_dir)
+    Ok(preview_of(&imported))
+}
+
+/// Re-parses (parsing is cheap; there's no server-side session to hold
+/// the previewed result across the two dialogs) and writes the result --
+/// spec section 8's "Import & Skip Flagged Scripts" / "Import Anyway".
+/// "Reject Import" needs no backend call at all; the frontend just never
+/// calls this.
+#[tauri::command]
+fn commit_postman_import(source_path: String, parent_dir: String, skip_flagged: bool) -> Result<ImportSummary, String> {
+    let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
+    let imported = import::postman::import_postman_collection(&json).map_err(|e| e.to_string())?;
+    commit_import(imported, &parent_dir, skip_flagged)
+}
+
+#[tauri::command]
+fn commit_openapi_import(source_path: String, parent_dir: String, skip_flagged: bool) -> Result<ImportSummary, String> {
+    let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
+    let imported = import::openapi::import_openapi_spec(&json).map_err(|e| e.to_string())?;
+    commit_import(imported, &parent_dir, skip_flagged)
 }
 
 #[derive(Debug, Serialize)]
@@ -594,8 +673,10 @@ pub fn run() {
             clear_environment,
             open_collection,
             close_collection,
-            import_postman_collection,
-            import_openapi_spec,
+            preview_postman_import,
+            preview_openapi_import,
+            commit_postman_import,
+            commit_openapi_import,
             read_request,
             save_request,
             load_full_response_body,

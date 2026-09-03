@@ -61,6 +61,36 @@ struct PostmanFolder {
 struct PostmanRequestItem {
     name: String,
     request: PostmanRequest,
+    #[serde(default)]
+    event: Vec<PostmanEvent>,
+}
+
+/// Postman's pre-request/test scripts live in a sibling `event` array,
+/// not inside `request` -- `{"listen": "prerequest"|"test", "script":
+/// {"exec": [...]}}`. This is the actual attack surface import security
+/// scanning cares about (spec section 8): a malicious collection's
+/// payload lives here, not in the request's own url/headers.
+#[derive(Debug, Deserialize)]
+struct PostmanEvent {
+    listen: String,
+    #[serde(default)]
+    script: Option<PostmanScript>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PostmanScript {
+    #[serde(default)]
+    exec: Vec<String>,
+}
+
+impl PostmanScript {
+    /// `exec` is one array entry per line; empty/whitespace-only scripts
+    /// come back as `None` rather than an empty `script:pre-request {}`
+    /// block nobody meant to add.
+    fn joined(&self) -> Option<String> {
+        let joined = self.exec.join("\n");
+        (!joined.trim().is_empty()).then_some(joined)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,6 +286,11 @@ fn walk_items(items: &[PostmanItem], folder_path: &[String], seq: &mut u32, out:
                 let headers: IndexMap<String, String> =
                     item.request.header.iter().filter(|h| !h.disabled).map(|h| (h.key.clone(), h.value.clone())).collect();
 
+                let script_pre_request =
+                    item.event.iter().find(|e| e.listen == "prerequest").and_then(|e| e.script.as_ref()).and_then(PostmanScript::joined);
+                let script_post_response =
+                    item.event.iter().find(|e| e.listen == "test").and_then(|e| e.script.as_ref()).and_then(PostmanScript::joined);
+
                 let request = ApiRequestFile {
                     meta: Meta {
                         name: item.name.clone(),
@@ -269,8 +304,8 @@ fn walk_items(items: &[PostmanItem], folder_path: &[String], seq: &mut u32, out:
                     headers,
                     auth,
                     body: convert_body(item.request.body.as_ref()),
-                    script_pre_request: None,
-                    script_post_response: None,
+                    script_pre_request,
+                    script_post_response,
                     asserts: Vec::new(),
                     extra_blocks: Vec::new(),
                 };
@@ -417,5 +452,39 @@ mod tests {
     #[test]
     fn invalid_json_errors_cleanly() {
         assert!(import_postman_collection("not json").is_err());
+    }
+
+    #[test]
+    fn imports_prerequest_and_test_scripts() {
+        let json = r#"{
+          "info": { "name": "X" },
+          "item": [{
+            "name": "Scripted",
+            "event": [
+              { "listen": "prerequest", "script": { "exec": ["bru.setVar('a', '1');", "console.log('pre');"] } },
+              { "listen": "test", "script": { "exec": ["bru.setVar('b', '2');"] } }
+            ],
+            "request": { "method": "GET", "url": "https://x.test" }
+          }]
+        }"#;
+        let imported = import_postman_collection(json).unwrap();
+        let req = &imported.requests[0].request;
+        assert_eq!(req.script_pre_request.as_deref(), Some("bru.setVar('a', '1');\nconsole.log('pre');"));
+        assert_eq!(req.script_post_response.as_deref(), Some("bru.setVar('b', '2');"));
+    }
+
+    #[test]
+    fn empty_or_missing_event_scripts_stay_none() {
+        let json = r#"{
+          "info": { "name": "X" },
+          "item": [{
+            "name": "Unscripted",
+            "event": [{ "listen": "prerequest", "script": { "exec": ["", "   "] } }],
+            "request": { "method": "GET", "url": "https://x.test" }
+          }]
+        }"#;
+        let imported = import_postman_collection(json).unwrap();
+        assert!(imported.requests[0].request.script_pre_request.is_none());
+        assert!(imported.requests[0].request.script_post_response.is_none());
     }
 }

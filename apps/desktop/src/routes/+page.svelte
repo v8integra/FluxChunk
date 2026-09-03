@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import CollectionTree, { type TreeNode } from "$lib/CollectionTree.svelte";
+  import ImportDialog, { type ImportPreviewDto } from "$lib/ImportDialog.svelte";
   import ResponsePanel from "$lib/ResponsePanel.svelte";
   import ThemeSwitcher, { type Theme } from "$lib/ThemeSwitcher.svelte";
   import type { SendResponseResult } from "$lib/types";
@@ -287,8 +288,20 @@
   }
 
   // --- import (Postman / OpenAPI) ---
+  // Spec section 8's two-dialog flow: preview (parse + security scan, no
+  // writes) -> ImportDialog shows a summary, then findings if any were
+  // scanned up -> commit (re-parses and writes, honoring the user's
+  // choice). "Reject Import" and plain Cancel never call commit at all,
+  // so nothing is ever written for either.
 
   let importSummary = $state<ImportSummaryDto | null>(null);
+  let importKind = $state<"postman" | "openapi">("postman");
+  let importSourcePath = $state("");
+  let importParentDir = $state("");
+  let importStage = $state<"summary" | "findings" | null>(null);
+  let importPreview = $state<ImportPreviewDto | null>(null);
+  let importCommitting = $state(false);
+  let importDialogError = $state("");
 
   async function importCollection(kind: "postman" | "openapi") {
     sidebarError = "";
@@ -321,16 +334,56 @@
     if (!parentDir) return;
 
     try {
-      const command = kind === "postman" ? "import_postman_collection" : "import_openapi_spec";
-      const summary = await invoke<ImportSummaryDto>(command, { sourcePath, parentDir });
+      const previewCommand = kind === "postman" ? "preview_postman_import" : "preview_openapi_import";
+      const preview = await invoke<ImportPreviewDto>(previewCommand, { sourcePath });
+      importKind = kind;
+      importSourcePath = sourcePath;
+      importParentDir = parentDir;
+      importPreview = preview;
+      importDialogError = "";
+      importStage = "summary";
+    } catch (e) {
+      sidebarError = String(e);
+    }
+  }
+
+  function cancelImportDialog() {
+    importStage = null;
+    importPreview = null;
+  }
+
+  function scanContinue() {
+    if (!importPreview) return;
+    if (importPreview.security_findings.length > 0) {
+      importStage = "findings";
+    } else {
+      commitImport(false);
+    }
+  }
+
+  async function commitImport(skipFlagged: boolean) {
+    if (!importPreview) return;
+    importCommitting = true;
+    importDialogError = "";
+    try {
+      const commitCommand = importKind === "postman" ? "commit_postman_import" : "commit_openapi_import";
+      const summary = await invoke<ImportSummaryDto>(commitCommand, {
+        sourcePath: importSourcePath,
+        parentDir: importParentDir,
+        skipFlagged,
+      });
       importSummary = summary;
+      importStage = null;
+      importPreview = null;
 
       const opened = await invoke<CollectionSummary>("open_collection", { path: summary.collection_path });
       collectionName = opened.name;
       collectionItems = opened.items;
       collectionEnvironments = opened.environments;
     } catch (e) {
-      sidebarError = String(e);
+      importDialogError = String(e);
+    } finally {
+      importCommitting = false;
     }
   }
 
@@ -498,6 +551,20 @@
         <p class="error">{sidebarError}</p>
       {/if}
     </aside>
+  {/if}
+
+  {#if importStage && importPreview}
+    <ImportDialog
+      stage={importStage}
+      preview={importPreview}
+      committing={importCommitting}
+      error={importDialogError}
+      onCancel={cancelImportDialog}
+      onScanContinue={scanContinue}
+      onRejectImport={cancelImportDialog}
+      onImportSkipFlagged={() => commitImport(true)}
+      onImportAnyway={() => commitImport(false)}
+    />
   {/if}
 
   <main>
