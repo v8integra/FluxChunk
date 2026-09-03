@@ -1,0 +1,17 @@
+meta {
+  name: Scripting vault boundary demo
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/headers
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+}
+
+script:pre-request {
+  console.log("api_key var as seen by script:", bru.getVar("api_key"));
+}

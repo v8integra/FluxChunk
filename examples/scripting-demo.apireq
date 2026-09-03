@@ -1,0 +1,26 @@
+meta {
+  name: Scripting demo (httpbin)
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://httpbin.org/get
+}
+
+headers {
+  Accept: application/json
+}
+
+script:pre-request {
+  bru.setVar("request_time", Date.now());
+  req.headers["X-Request-Time"] = bru.getVar("request_time");
+  console.log("pre-request script ran, url is", req.url);
+}
+
+script:post-response {
+  console.log("status was", res.status);
+  if (res.status === 200) {
+    bru.setVar("origin_ip", res.body.origin);
+  }
+}

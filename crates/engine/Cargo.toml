@@ -12,6 +12,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 indexmap = "2"
+rquickjs = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

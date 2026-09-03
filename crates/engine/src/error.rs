@@ -13,4 +13,13 @@ pub enum EngineError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("script error: {0}")]
+    Script(String),
+}
+
+impl From<rquickjs::Error> for EngineError {
+    fn from(e: rquickjs::Error) -> Self {
+        EngineError::Script(e.to_string())
+    }
 }

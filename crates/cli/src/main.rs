@@ -1,13 +1,15 @@
 //! Minimal early slice of `apicli` (spec section 14): send a single
-//! `.apireq` file, optionally against an `.apienv` environment, and print
-//! the result. Collection/folder runs, iteration data, JUnit/JSON
-//! reporters, and assertion evaluation land later — this proves the
-//! engine's parse -> resolve (vars, then vault) -> send path end to end.
+//! `.apireq` file, optionally against an `.apienv` environment, running
+//! its pre-request/post-response scripts around the send. Collection/
+//! folder runs, iteration data, JUnit/JSON reporters, and assertion
+//! evaluation land later — this proves the engine's full parse -> resolve
+//! (vars, then vault) -> script -> send -> script path end to end.
 
 use std::path::{Path, PathBuf};
 
-use fluxchunk_engine::format::{ApiRequestFile, EnvironmentFile, VaultFile};
+use fluxchunk_engine::format::{ApiRequestFile, Auth, EnvironmentFile, VaultFile};
 use fluxchunk_engine::http::{build_outgoing_request, HttpClient};
+use fluxchunk_engine::script::{self, ConsoleEntry, ConsoleLevel, ScriptLimits, ScriptRequest, ScriptResponse};
 use fluxchunk_engine::vars::{interpolate, merge_scopes, resolve_vault};
 use indexmap::IndexMap;
 
@@ -68,6 +70,18 @@ fn load_env(env_path: &Path) -> (IndexMap<String, String>, IndexMap<String, Stri
     (env.vars, vault)
 }
 
+fn print_console(entries: &[ConsoleEntry]) {
+    for entry in entries {
+        let tag = match entry.level {
+            ConsoleLevel::Log => "log",
+            ConsoleLevel::Info => "info",
+            ConsoleLevel::Warn => "warn",
+            ConsoleLevel::Error => "error",
+        };
+        eprintln!("[console.{tag}] {}", entry.message);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = parse_args();
@@ -87,19 +101,41 @@ async fn main() {
     };
     // Only one scope exists yet (the environment); global/collection-scoped
     // vars merge in ahead of it here once .apicol parsing lands.
-    let vars = merge_scopes(&[&env_vars]);
+    let mut vars = merge_scopes(&[&env_vars]);
 
-    // Stage 1 only (vars, no vault) -- safe to print. The vault stage runs
-    // separately, right before the request goes out, and its output is
-    // never echoed: printing a resolved secret to the terminal would
-    // defeat the point of keeping it out of Git as surely as committing it
-    // would (spec section 9/16).
-    let visible_url = interpolate(&file.url, &vars);
-    let visible_headers: IndexMap<String, String> =
+    // Stage 1 only (vars, no vault) -- safe to print/hand to a script. The
+    // vault stage runs separately, right before the request goes out
+    // (after any pre-request script has already finished), and its output
+    // is never echoed or exposed to a script: spec sections 9 and 16.
+    let mut visible_url = interpolate(&file.url, &vars);
+    let mut visible_headers: IndexMap<String, String> =
         file.headers.iter().map(|(k, v)| (k.clone(), interpolate(v, &vars))).collect();
+    let mut visible_body = file.body.as_ref().map(|b| interpolate(b.content(), &vars));
+
+    if let Some(script_source) = &file.script_pre_request {
+        let script_req = ScriptRequest {
+            method: file.method.to_uppercase(),
+            url: visible_url.clone(),
+            headers: visible_headers.clone(),
+            body: visible_body.clone(),
+        };
+        match script::run_pre_request(script_source, &vars, &script_req, &ScriptLimits::default()) {
+            Ok(outcome) => {
+                print_console(&outcome.console);
+                vars = outcome.vars;
+                visible_url = outcome.request.url;
+                visible_headers = outcome.request.headers;
+                visible_body = outcome.request.body;
+            }
+            Err(e) => {
+                eprintln!("error: pre-request script failed: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
 
     print!("{} {}", file.method.to_uppercase(), visible_url);
-    if !matches!(file.auth, fluxchunk_engine::format::Auth::None) {
+    if !matches!(file.auth, Auth::None) {
         print!(" (auth: {})", file.auth.mode_str());
     }
     println!();
@@ -108,11 +144,7 @@ async fn main() {
     let send_headers: IndexMap<String, String> =
         visible_headers.iter().map(|(k, v)| (k.clone(), resolve_vault(v, &vault))).collect();
     let resolved_auth = file.auth.resolve(&vars, &vault);
-
-    let resolved_body = file
-        .body
-        .as_ref()
-        .map(|b| resolve_vault(&interpolate(b.content(), &vars), &vault));
+    let resolved_body = visible_body.as_ref().map(|b| resolve_vault(b, &vault));
 
     let outgoing = build_outgoing_request(&file, send_url, send_headers, resolved_auth, resolved_body).unwrap_or_else(|e| {
         eprintln!("error: {e}");
@@ -120,14 +152,29 @@ async fn main() {
     });
 
     let client = HttpClient::new();
-    match client.send(outgoing).await {
-        Ok(resp) => {
-            println!("status: {} ({} ms)", resp.status, resp.elapsed_ms);
-            println!("{}", resp.body_as_text());
-        }
+    let response = match client.send(outgoing).await {
+        Ok(resp) => resp,
         Err(e) => {
             eprintln!("error: request failed: {e}");
             std::process::exit(2);
+        }
+    };
+
+    println!("status: {} ({} ms)", response.status, response.elapsed_ms);
+    println!("{}", response.body_as_text());
+
+    if let Some(script_source) = &file.script_post_response {
+        let script_res = ScriptResponse {
+            status: response.status.as_u16(),
+            headers: response.headers.clone(),
+            body: response.body_as_text(),
+        };
+        match script::run_post_response(script_source, &vars, &script_res, &ScriptLimits::default()) {
+            Ok(outcome) => print_console(&outcome.console),
+            Err(e) => {
+                eprintln!("error: post-response script failed: {e}");
+                std::process::exit(1);
+            }
         }
     }
 }
