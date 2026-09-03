@@ -38,7 +38,7 @@ impl ApiKeyPlacement {
     /// a missing/unrecognized placement shouldn't silently start sending
     /// the key in a URL (more likely to be logged/cached) instead of a
     /// header.
-    pub(super) fn from_field(s: Option<&str>) -> Self {
+    pub fn from_field(s: Option<&str>) -> Self {
         match s {
             Some(s) if s.eq_ignore_ascii_case("query") => ApiKeyPlacement::Query,
             _ => ApiKeyPlacement::Header,
