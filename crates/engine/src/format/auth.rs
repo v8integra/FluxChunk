@@ -70,10 +70,14 @@ pub struct OAuth2Config {
 pub enum Auth {
     #[default]
     None,
-    /// Use whatever auth the parent folder/collection defines. Collection
-    /// auth defaults don't exist yet (`.apicol` isn't implemented), so
-    /// this currently applies the same as `None` at send time — see
-    /// `http::apply_auth`.
+    /// Use whatever auth the parent collection defines --
+    /// `crate::collection::resolve_inherited_auth` does the actual lookup
+    /// against a loaded `CollectionFile`'s auth before `.resolve()` /
+    /// `http::apply_auth` ever see it. A caller that never resolves
+    /// inheritance (or has no collection loaded) sends this as `None`,
+    /// since `apply_auth` treats an unresolved `Inherit` that way. Only
+    /// collection-level inheritance exists so far -- per-folder `.folder`
+    /// overrides (spec section 4) aren't implemented yet.
     Inherit,
     Basic { username: String, password: String },
     Bearer { token: String },

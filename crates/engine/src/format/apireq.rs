@@ -51,6 +51,23 @@ impl Body {
         }
     }
 
+    /// Rebuilds this body with new content, keeping the same kind (e.g.
+    /// `Body::Json` stays `Body::Json`). For callers -- like the desktop
+    /// UI's Save -- editing a body's text without a way to also change
+    /// its declared type yet.
+    pub fn with_content(&self, content: String) -> Body {
+        match self {
+            Body::Json(_) => Body::Json(content),
+            Body::Raw(_) => Body::Raw(content),
+            Body::Text(_) => Body::Text(content),
+            Body::Xml(_) => Body::Xml(content),
+            Body::FormData(_) => Body::FormData(content),
+            Body::UrlEncoded(_) => Body::UrlEncoded(content),
+            Body::GraphQl(_) => Body::GraphQl(content),
+            Body::Binary(_) => Body::Binary(content),
+        }
+    }
+
     fn from_suffix(suffix: &str, content: String) -> Option<Body> {
         Some(match suffix {
             "json" => Body::Json(content),

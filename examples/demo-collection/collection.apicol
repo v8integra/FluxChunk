@@ -1,0 +1,12 @@
+meta {
+  name: Demo Collection
+  format_version: 1
+}
+
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: {{vault:collection_token}}
+}

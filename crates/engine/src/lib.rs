@@ -1,3 +1,4 @@
+pub mod collection;
 pub mod error;
 pub mod format;
 pub mod http;

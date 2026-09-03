@@ -1,0 +1,13 @@
+meta {
+  name: Get headers (inherits collection auth)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/headers
+}
+
+auth {
+  mode: inherit
+}
