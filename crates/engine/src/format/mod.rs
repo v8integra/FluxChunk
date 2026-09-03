@@ -6,10 +6,12 @@
 
 pub mod apienv;
 pub mod apireq;
+pub mod auth;
 pub mod blocks;
 pub mod vault;
 
 pub use apienv::EnvironmentFile;
 pub use apireq::{ApiRequestFile, Assertion, Body, Meta};
+pub use auth::{ApiKeyPlacement, Auth, OAuth2Config};
 pub use blocks::RawBlock;
 pub use vault::VaultFile;

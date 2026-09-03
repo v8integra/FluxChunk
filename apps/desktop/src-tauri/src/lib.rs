@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use fluxchunk_engine::format::Auth;
 use fluxchunk_engine::http::{HttpClient, Method, OutgoingBody, OutgoingRequest};
 use serde::Serialize;
 
@@ -29,6 +30,10 @@ async fn send_request(
         method,
         url,
         headers: headers.into_iter().collect(),
+        // No Auth tab in the UI yet -- same follow-up as the environment
+        // picker (see engine/src/format/auth.rs for the format+resolve
+        // side, which is already wired up end to end via apicli).
+        auth: Auth::None,
         body: body.map(OutgoingBody::Text),
     };
 

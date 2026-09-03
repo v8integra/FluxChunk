@@ -1,0 +1,18 @@
+meta {
+  name: Basic auth (httpbin)
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://httpbin.org/basic-auth/fluxchunk/hunter2
+}
+
+auth {
+  mode: basic
+}
+
+auth:basic {
+  username: fluxchunk
+  password: {{vault:basic_password}}
+}

@@ -1,3 +1,4 @@
+use super::auth::Auth;
 use super::blocks::{parse_blocks, parse_key_value_lines, render_key_value_block, render_raw_block, RawBlock};
 use crate::error::EngineError;
 use indexmap::IndexMap;
@@ -82,6 +83,7 @@ pub struct ApiRequestFile {
     pub params_query: IndexMap<String, String>,
     pub params_path: IndexMap<String, String>,
     pub headers: IndexMap<String, String>,
+    pub auth: Auth,
     pub body: Option<Body>,
     pub script_pre_request: Option<String>,
     pub script_post_response: Option<String>,
@@ -99,6 +101,11 @@ impl ApiRequestFile {
         let mut params_query = IndexMap::new();
         let mut params_path = IndexMap::new();
         let mut headers = IndexMap::new();
+        let mut auth_mode = None;
+        let mut auth_basic = None;
+        let mut auth_bearer = None;
+        let mut auth_apikey = None;
+        let mut auth_oauth2 = None;
         let mut body = None;
         let mut script_pre_request = None;
         let mut script_post_response = None;
@@ -124,6 +131,11 @@ impl ApiRequestFile {
                 "params:query" => params_query = parse_key_value_lines(&block.content),
                 "params:path" => params_path = parse_key_value_lines(&block.content),
                 "headers" => headers = parse_key_value_lines(&block.content),
+                "auth" => auth_mode = parse_key_value_lines(&block.content).get("mode").cloned(),
+                "auth:basic" => auth_basic = Some(parse_key_value_lines(&block.content)),
+                "auth:bearer" => auth_bearer = Some(parse_key_value_lines(&block.content)),
+                "auth:apikey" => auth_apikey = Some(parse_key_value_lines(&block.content)),
+                "auth:oauth2" => auth_oauth2 = Some(parse_key_value_lines(&block.content)),
                 "assert" => {
                     for line in block.content.lines() {
                         let line = line.trim();
@@ -154,6 +166,8 @@ impl ApiRequestFile {
         let meta = meta.ok_or_else(|| EngineError::ParseFormat("missing 'meta' block".into()))?;
         let method = method.ok_or_else(|| EngineError::ParseFormat("missing HTTP method block (get/post/...)".into()))?;
         let url = url.ok_or_else(|| EngineError::ParseFormat(format!("'{method}' block missing 'url' field")))?;
+        let auth = Auth::from_parts(auth_mode.as_deref(), auth_basic, auth_bearer, auth_apikey, auth_oauth2)
+            .map_err(EngineError::ParseFormat)?;
 
         Ok(ApiRequestFile {
             meta,
@@ -162,6 +176,7 @@ impl ApiRequestFile {
             params_query,
             params_path,
             headers,
+            auth,
             body,
             script_pre_request,
             script_post_response,
@@ -192,6 +207,7 @@ impl ApiRequestFile {
         if let Some(b) = render_key_value_block("headers", &self.headers) {
             sections.push(b);
         }
+        sections.extend(self.auth.render_blocks());
         if let Some(body) = &self.body {
             sections.push(render_raw_block(&format!("body:{}", body.kind_suffix()), body.content()));
         }
@@ -291,5 +307,38 @@ assert {
     fn missing_meta_block_errors() {
         let input = "get {\n  url: https://example.com\n}\n";
         assert!(ApiRequestFile::parse(input).is_err());
+    }
+
+    #[test]
+    fn parses_bearer_auth() {
+        let input = "meta {\n  name: x\n  type: http\n  seq: 1\n}\n\nget {\n  url: https://example.com\n}\n\nauth {\n  mode: bearer\n}\n\nauth:bearer {\n  token: {{vault:access_token}}\n}\n";
+        let parsed = ApiRequestFile::parse(input).unwrap();
+        assert_eq!(
+            parsed.auth,
+            crate::format::Auth::Bearer {
+                token: "{{vault:access_token}}".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn no_auth_block_means_auth_none() {
+        let parsed = ApiRequestFile::parse(EXAMPLE).unwrap();
+        assert_eq!(parsed.auth, crate::format::Auth::None);
+    }
+
+    #[test]
+    fn auth_mode_without_matching_detail_block_errors() {
+        let input = "meta {\n  name: x\n  type: http\n  seq: 1\n}\n\nget {\n  url: https://example.com\n}\n\nauth {\n  mode: basic\n}\n";
+        assert!(ApiRequestFile::parse(input).is_err());
+    }
+
+    #[test]
+    fn auth_round_trips() {
+        let input = "meta {\n  name: x\n  type: http\n  seq: 1\n}\n\nget {\n  url: https://example.com\n}\n\nauth {\n  mode: apikey\n}\n\nauth:apikey {\n  key: X-API-Key\n  value: {{vault:api_key}}\n  placement: query\n}\n";
+        let parsed = ApiRequestFile::parse(input).unwrap();
+        let rendered = parsed.to_string_pretty();
+        let reparsed = ApiRequestFile::parse(&rendered).unwrap();
+        assert_eq!(parsed, reparsed);
     }
 }

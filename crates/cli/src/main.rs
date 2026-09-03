@@ -98,18 +98,23 @@ async fn main() {
     let visible_headers: IndexMap<String, String> =
         file.headers.iter().map(|(k, v)| (k.clone(), interpolate(v, &vars))).collect();
 
-    println!("{} {}", file.method.to_uppercase(), visible_url);
+    print!("{} {}", file.method.to_uppercase(), visible_url);
+    if !matches!(file.auth, fluxchunk_engine::format::Auth::None) {
+        print!(" (auth: {})", file.auth.mode_str());
+    }
+    println!();
 
     let send_url = resolve_vault(&visible_url, &vault);
     let send_headers: IndexMap<String, String> =
         visible_headers.iter().map(|(k, v)| (k.clone(), resolve_vault(v, &vault))).collect();
+    let resolved_auth = file.auth.resolve(&vars, &vault);
 
     let resolved_body = file
         .body
         .as_ref()
         .map(|b| resolve_vault(&interpolate(b.content(), &vars), &vault));
 
-    let outgoing = build_outgoing_request(&file, send_url, send_headers, resolved_body).unwrap_or_else(|e| {
+    let outgoing = build_outgoing_request(&file, send_url, send_headers, resolved_auth, resolved_body).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(2);
     });

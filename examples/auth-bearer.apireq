@@ -1,0 +1,17 @@
+meta {
+  name: Bearer auth (httpbin)
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://httpbin.org/bearer
+}
+
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: demo-token-abc123
+}

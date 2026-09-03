@@ -1,0 +1,19 @@
+meta {
+  name: API key in header (httpbin)
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://httpbin.org/headers
+}
+
+auth {
+  mode: apikey
+}
+
+auth:apikey {
+  key: X-API-Key
+  value: demo-key-99999
+  placement: header
+}

@@ -1,0 +1,19 @@
+meta {
+  name: API key in query (httpbin)
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://httpbin.org/get
+}
+
+auth {
+  mode: apikey
+}
+
+auth:apikey {
+  key: api_key
+  value: demo-key-99999
+  placement: query
+}
