@@ -305,7 +305,7 @@
   .sub-tabs {
     display: flex;
     gap: 0.25rem;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+    border-bottom: 1px solid var(--border);
     margin-bottom: 0.6rem;
     padding-bottom: 0.3rem;
   }
@@ -317,13 +317,13 @@
   }
 
   .sub-tabs button.active {
-    background: rgba(127, 127, 127, 0.15);
+    background: var(--bg-hover);
     font-weight: 600;
   }
 
   .gate {
     padding: 1rem;
-    border: 1px dashed rgba(127, 127, 127, 0.4);
+    border: 1px dashed var(--border);
     border-radius: 6px;
     text-align: center;
   }
@@ -349,7 +349,7 @@
   .json-tree-container {
     max-height: 55vh;
     overflow: auto;
-    background: rgba(127, 127, 127, 0.06);
+    background: var(--bg-hover);
     border-radius: 6px;
     padding: 0.6rem;
   }
@@ -357,7 +357,7 @@
   pre {
     white-space: pre-wrap;
     word-break: break-word;
-    background: rgba(127, 127, 127, 0.06);
+    background: var(--bg-hover);
     border-radius: 6px;
     padding: 0.75rem;
     max-height: 55vh;
@@ -367,8 +367,11 @@
   .preview-frame {
     width: 100%;
     height: 55vh;
-    border: 1px solid rgba(127, 127, 127, 0.25);
+    border: 1px solid var(--border);
     border-radius: 6px;
+    /* Deliberately always white, not theme-driven: this renders arbitrary
+       external HTML, which expects a normal page background regardless
+       of the app's own theme. */
     background: #fff;
   }
 
@@ -382,7 +385,7 @@
   .kv-table th {
     text-align: left;
     padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+    border-bottom: 1px solid var(--border);
     word-break: break-word;
   }
 
@@ -398,7 +401,7 @@
   }
 
   .error {
-    color: #b00020;
+    color: var(--danger);
   }
 
   .history-header {
@@ -434,16 +437,17 @@
   }
 
   .history-entry.selected {
-    background: rgba(80, 130, 255, 0.15);
+    background: var(--bg-hover);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
 
   .hist-status {
     font-weight: 700;
-    color: #f85149;
+    color: var(--danger);
   }
 
   .hist-status.ok {
-    color: #2ea043;
+    color: var(--success);
   }
 
   .hist-time,
@@ -461,7 +465,7 @@
   .history-detail {
     margin-top: 0.75rem;
     padding-top: 0.5rem;
-    border-top: 1px solid rgba(127, 127, 127, 0.2);
+    border-top: 1px solid var(--border);
   }
 
   .compare-row {
@@ -479,16 +483,10 @@
 
   .diff-container {
     margin-top: 0.75rem;
-    background: rgba(127, 127, 127, 0.06);
+    background: var(--bg-hover);
     border-radius: 6px;
     padding: 0.6rem;
     max-height: 50vh;
     overflow: auto;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .preview-frame {
-      background: #1a1a1a;
-    }
   }
 </style>

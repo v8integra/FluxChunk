@@ -1,3 +1,5 @@
+mod settings;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -11,6 +13,7 @@ use fluxchunk_engine::response::{self, BodyPreview, Cookie};
 use fluxchunk_engine::vars::{interpolate, merge_scopes, resolve_vault};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use settings::Settings;
 use tauri::Manager;
 
 /// Spec section 10's own default ("last N runs per request, default ~20,
@@ -41,6 +44,17 @@ struct AppState {
     environment: Mutex<EnvironmentState>,
     collection: Mutex<CollectionState>,
     history: HistoryStore,
+    settings_path: PathBuf,
+}
+
+#[tauri::command]
+fn load_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
+    settings::load(&state.settings_path)
+}
+
+#[tauri::command]
+fn save_settings(state: tauri::State<AppState>, settings: Settings) -> Result<(), String> {
+    settings::save(&state.settings_path, &settings)
 }
 
 #[derive(Debug, Serialize)]
@@ -519,12 +533,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let history_path = app.path().app_data_dir()?.join("history.sqlite3");
-            let history = HistoryStore::open(&history_path)?;
+            let app_data_dir = app.path().app_data_dir()?;
+            let history = HistoryStore::open(&app_data_dir.join("history.sqlite3"))?;
             app.manage(AppState {
                 environment: Mutex::new(EnvironmentState::default()),
                 collection: Mutex::new(CollectionState::default()),
                 history,
+                settings_path: app_data_dir.join("config.toml"),
             });
             Ok(())
         })
@@ -540,7 +555,9 @@ pub fn run() {
             list_history,
             clear_history,
             get_history_entry,
-            diff_history
+            diff_history,
+            load_settings,
+            save_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

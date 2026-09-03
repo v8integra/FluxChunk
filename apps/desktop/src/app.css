@@ -1,0 +1,123 @@
+/* Theme tokens (spec section 10): 7 selectable themes -- Light, Dark,
+   Blue, Green, Red, Pink, Silver. Silver is its own cool-neutral palette,
+   not a derived variant of Light, per spec's explicit callout.
+
+   Structural colors (bg/text/border/accent) vary per theme via
+   [data-theme="..."]; semantic status colors (success/danger/warning --
+   used for diff coloring, history status) stay constant across every
+   theme, the same way a git diff's green/red don't change with your
+   editor's color scheme. */
+
+:root {
+  --success: #2ea043;
+  --danger: #f85149;
+  --warning: #d29922;
+  --radius: 6px;
+
+  /* JSON syntax highlighting: one light-background palette (the default
+     below, used by every light-family theme -- Light/Blue/Green/Red/
+     Pink/Silver all have enough contrast against it) and one dark
+     override for the Dark theme, rather than defining 7 separate sets. */
+  --syntax-key: #a626a4;
+  --syntax-string: #50a14f;
+  --syntax-number: #4078f2;
+  --syntax-bool: #c18401;
+  --syntax-null: #888888;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f6f6;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(0, 0, 0, 0.05);
+  --text: #0f0f0f;
+  --text-muted: #666666;
+  --border: #cccccc;
+  --accent: #3b6fe0;
+  --accent-text: #ffffff;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #202020;
+  --bg-elevated: #2c2c2c;
+  --bg-hover: rgba(255, 255, 255, 0.08);
+  --text: #f2f2f2;
+  --text-muted: #a0a0a0;
+  --border: #444444;
+  --accent: #5b8def;
+  --accent-text: #0f0f0f;
+  --syntax-key: #c678dd;
+  --syntax-string: #98c379;
+  --syntax-number: #61afef;
+  --syntax-bool: #e5c07b;
+  --syntax-null: #999999;
+}
+
+[data-theme="blue"] {
+  color-scheme: light;
+  --bg: #eaf2fb;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(29, 111, 216, 0.08);
+  --text: #10243e;
+  --text-muted: #4c6382;
+  --border: #b9d2ef;
+  --accent: #1d6fd8;
+  --accent-text: #ffffff;
+}
+
+[data-theme="green"] {
+  color-scheme: light;
+  --bg: #eaf7ee;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(31, 157, 85, 0.08);
+  --text: #123821;
+  --text-muted: #4c7a5c;
+  --border: #bfe3cc;
+  --accent: #1f9d55;
+  --accent-text: #ffffff;
+}
+
+[data-theme="red"] {
+  color-scheme: light;
+  --bg: #fceceb;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(220, 53, 69, 0.08);
+  --text: #3a1210;
+  --text-muted: #8a5450;
+  --border: #f3c2be;
+  --accent: #dc3545;
+  --accent-text: #ffffff;
+}
+
+[data-theme="pink"] {
+  color-scheme: light;
+  --bg: #fdeef5;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(224, 73, 155, 0.08);
+  --text: #3a1228;
+  --text-muted: #8a5271;
+  --border: #f6c7e2;
+  --accent: #e0499b;
+  --accent-text: #ffffff;
+}
+
+[data-theme="silver"] {
+  color-scheme: light;
+  --bg: #e4e7eb;
+  --bg-elevated: #f5f6f8;
+  --bg-hover: rgba(91, 107, 124, 0.1);
+  --text: #1c2128;
+  --text-muted: #5b6472;
+  --border: #c3c9d1;
+  --accent: #5b6b7c;
+  --accent-text: #ffffff;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+}

@@ -3,6 +3,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import CollectionTree, { type TreeNode } from "$lib/CollectionTree.svelte";
   import ResponsePanel from "$lib/ResponsePanel.svelte";
+  import ThemeSwitcher, { type Theme } from "$lib/ThemeSwitcher.svelte";
   import type { SendResponseResult } from "$lib/types";
 
   type EnvironmentSummary = {
@@ -102,6 +103,59 @@
   let collectionItems = $state<TreeNode[]>([]);
   let collectionEnvironments = $state<{ name: string; path: string }[]>([]);
   let sidebarError = $state("");
+
+  // --- workspace shell: theme, layout, panel visibility (spec section 10) ---
+  // Persisted as tier-1 settings (spec section 11) -- see
+  // apps/desktop/src-tauri/src/settings.rs. The 3 fixed presets (Split/
+  // Stacked/Focus) are fully implemented; the spec's 4th "Custom" slot
+  // (drag-and-drop panel rearrangement, with its own Save/Cancel
+  // interaction) is a deliberate follow-up, not attempted here -- real
+  // drag-and-drop layout editing is its own substantial feature, and a
+  // button that just duplicated Split without it would be a hollow stand-in.
+
+  type LayoutPreset = "split" | "stacked" | "focus";
+  const LAYOUT_PRESETS: LayoutPreset[] = ["split", "stacked", "focus"];
+
+  type PanelVisibility = { headers: boolean; auth: boolean; body: boolean };
+  type SettingsDto = { theme: Theme; layout_preset: LayoutPreset; panels: PanelVisibility };
+
+  let theme = $state<Theme>("light");
+  let layoutPreset = $state<LayoutPreset>("stacked");
+  let panels = $state<PanelVisibility>({ headers: true, auth: true, body: true });
+  let settingsLoaded = $state(false);
+
+  $effect(() => {
+    document.documentElement.dataset.theme = theme;
+  });
+
+  $effect(() => {
+    // Tracked dependencies: re-save whenever any of these change.
+    void theme;
+    void layoutPreset;
+    void panels.headers;
+    void panels.auth;
+    void panels.body;
+    if (!settingsLoaded) return; // don't clobber the saved file with defaults before the initial load lands
+    invoke("save_settings", { settings: { theme, layout_preset: layoutPreset, panels } }).catch((e) => console.error(e));
+  });
+
+  async function loadSettings() {
+    try {
+      const s = await invoke<SettingsDto>("load_settings");
+      theme = s.theme;
+      layoutPreset = s.layout_preset;
+      panels = s.panels;
+    } catch (e) {
+      console.error(e);
+    } finally {
+      settingsLoaded = true;
+    }
+  }
+  loadSettings();
+
+  function capitalize(s: string): string {
+    return s[0].toUpperCase() + s.slice(1);
+  }
 
   function parseHeaders(text: string): Record<string, string> {
     const headers: Record<string, string> = {};
@@ -344,30 +398,42 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="app">
-  <aside class="sidebar">
-    {#if collectionName}
-      <div class="sidebar-header">
-        <strong>{collectionName}</strong>
-        <button type="button" onclick={closeCollection}>Close</button>
-      </div>
-      {#if collectionEnvironments.length > 0}
-        <div class="env-quick-pick">
-          {#each collectionEnvironments as env (env.path)}
-            <button type="button" onclick={() => loadEnvironmentByPath(env.path)}>{env.name}</button>
-          {/each}
+  {#if layoutPreset !== "focus"}
+    <aside class="sidebar">
+      {#if collectionName}
+        <div class="sidebar-header">
+          <strong>{collectionName}</strong>
+          <button type="button" onclick={closeCollection}>Close</button>
         </div>
+        {#if collectionEnvironments.length > 0}
+          <div class="env-quick-pick">
+            {#each collectionEnvironments as env (env.path)}
+              <button type="button" onclick={() => loadEnvironmentByPath(env.path)}>{env.name}</button>
+            {/each}
+          </div>
+        {/if}
+        <CollectionTree items={collectionItems} onSelect={openRequestInTab} activePath={activeTab?.filePath ?? null} />
+      {:else}
+        <button type="button" onclick={openCollection}>Open Collection...</button>
       {/if}
-      <CollectionTree items={collectionItems} onSelect={openRequestInTab} activePath={activeTab?.filePath ?? null} />
-    {:else}
-      <button type="button" onclick={openCollection}>Open Collection...</button>
-    {/if}
-    {#if sidebarError}
-      <p class="error">{sidebarError}</p>
-    {/if}
-  </aside>
+      {#if sidebarError}
+        <p class="error">{sidebarError}</p>
+      {/if}
+    </aside>
+  {/if}
 
   <main>
-    <h1>FluxChunk</h1>
+    <div class="workspace-header">
+      <h1>FluxChunk</h1>
+      <div class="workspace-controls">
+        <div class="layout-presets" role="radiogroup" aria-label="Layout">
+          {#each LAYOUT_PRESETS as p (p)}
+            <button type="button" class:active={layoutPreset === p} onclick={() => (layoutPreset = p)}>{capitalize(p)}</button>
+          {/each}
+        </div>
+        <ThemeSwitcher {theme} onChange={(t) => (theme = t)} />
+      </div>
+    </div>
 
     <section class="environment">
       {#if environment}
@@ -426,74 +492,93 @@
         <button type="submit" disabled={tab.sending}>{tab.sending ? "Sending..." : "Send"}</button>
       </form>
 
-      <section>
-        <label for="headers">Headers (one per line, "Key: Value")</label>
-        <textarea id="headers" bind:value={tab.headersText} rows="3"></textarea>
-      </section>
+      <!-- Panel show/hide chips (spec section 10): hiding never deletes
+           data, it's purely a visibility toggle -- the tab's fields stay
+           exactly as they are underneath. -->
+      <div class="panel-chips">
+        <button type="button" class="chip" class:active={panels.headers} onclick={() => (panels.headers = !panels.headers)}>Headers</button>
+        <button type="button" class="chip" class:active={panels.auth} onclick={() => (panels.auth = !panels.auth)}>Auth</button>
+        <button type="button" class="chip" class:active={panels.body} onclick={() => (panels.body = !panels.body)}>Body</button>
+      </div>
 
-      <section class="auth">
-        <label for="auth-mode">Auth</label>
-        <select id="auth-mode" bind:value={tab.authMode}>
-          <option value="none">None</option>
-          <option value="inherit">Inherit</option>
-          <option value="basic">Basic</option>
-          <option value="bearer">Bearer</option>
-          <option value="apikey">API Key</option>
-          <option value="oauth2">OAuth2</option>
-        </select>
+      <div class="content" class:split={layoutPreset === "split"}>
+        <div class="request-builder">
+          {#if panels.headers}
+            <section>
+              <label for="headers">Headers (one per line, "Key: Value")</label>
+              <textarea id="headers" bind:value={tab.headersText} rows="3"></textarea>
+            </section>
+          {/if}
 
-        {#if tab.authMode === "inherit"}
-          <p class="hint">
-            {collectionName ? `Inherits "${collectionName}"'s auth.` : "No collection open -- resolves the same as None."}
-          </p>
-        {:else if tab.authMode === "basic"}
-          <div class="auth-fields">
-            <input bind:value={tab.authUsername} placeholder="Username" />
-            <input bind:value={tab.authPassword} type="password" placeholder="Password" />
+          {#if panels.auth}
+            <section class="auth">
+              <label for="auth-mode">Auth</label>
+              <select id="auth-mode" bind:value={tab.authMode}>
+                <option value="none">None</option>
+                <option value="inherit">Inherit</option>
+                <option value="basic">Basic</option>
+                <option value="bearer">Bearer</option>
+                <option value="apikey">API Key</option>
+                <option value="oauth2">OAuth2</option>
+              </select>
+
+              {#if tab.authMode === "inherit"}
+                <p class="hint">
+                  {collectionName ? `Inherits "${collectionName}"'s auth.` : "No collection open -- resolves the same as None."}
+                </p>
+              {:else if tab.authMode === "basic"}
+                <div class="auth-fields">
+                  <input bind:value={tab.authUsername} placeholder="Username" />
+                  <input bind:value={tab.authPassword} type="password" placeholder="Password" />
+                </div>
+              {:else if tab.authMode === "bearer"}
+                <div class="auth-fields">
+                  <input bind:value={tab.authToken} type="password" placeholder="Token" />
+                </div>
+              {:else if tab.authMode === "apikey"}
+                <div class="auth-fields">
+                  <input bind:value={tab.authApiKeyName} placeholder="Key name (e.g. X-API-Key)" />
+                  <input bind:value={tab.authApiKeyValue} type="password" placeholder="Value" />
+                  <select bind:value={tab.authApiKeyPlacement}>
+                    <option value="header">Header</option>
+                    <option value="query">Query param</option>
+                  </select>
+                </div>
+              {:else if tab.authMode === "oauth2"}
+                <div class="auth-fields">
+                  <input bind:value={tab.authAccessToken} type="password" placeholder="Access token" />
+                </div>
+                <p class="hint">Paste a token you already have -- interactive login isn't implemented yet.</p>
+              {/if}
+              <p class="hint">Auth values may use {"{{var}}"} / {"{{vault:...}}"} too, same as headers.</p>
+            </section>
+          {/if}
+
+          {#if panels.body}
+            <section>
+              <label for="body">Body</label>
+              <textarea id="body" bind:value={tab.body} rows="5" placeholder="(optional)"></textarea>
+            </section>
+          {/if}
+
+          {#if tab.error}
+            <p class="error">{tab.error}</p>
+          {/if}
+        </div>
+
+        {#if tab.response}
+          <div class="response-column">
+            <ResponsePanel response={tab.response} requestKey={requestKeyOf(tab)} />
           </div>
-        {:else if tab.authMode === "bearer"}
-          <div class="auth-fields">
-            <input bind:value={tab.authToken} type="password" placeholder="Token" />
-          </div>
-        {:else if tab.authMode === "apikey"}
-          <div class="auth-fields">
-            <input bind:value={tab.authApiKeyName} placeholder="Key name (e.g. X-API-Key)" />
-            <input bind:value={tab.authApiKeyValue} type="password" placeholder="Value" />
-            <select bind:value={tab.authApiKeyPlacement}>
-              <option value="header">Header</option>
-              <option value="query">Query param</option>
-            </select>
-          </div>
-        {:else if tab.authMode === "oauth2"}
-          <div class="auth-fields">
-            <input bind:value={tab.authAccessToken} type="password" placeholder="Access token" />
-          </div>
-          <p class="hint">Paste a token you already have -- interactive login isn't implemented yet.</p>
         {/if}
-        <p class="hint">Auth values may use {"{{var}}"} / {"{{vault:...}}"} too, same as headers.</p>
-      </section>
-
-      <section>
-        <label for="body">Body</label>
-        <textarea id="body" bind:value={tab.body} rows="5" placeholder="(optional)"></textarea>
-      </section>
-
-      {#if tab.error}
-        <p class="error">{tab.error}</p>
-      {/if}
-
-      {#if tab.response}
-        <ResponsePanel response={tab.response} requestKey={requestKeyOf(tab)} />
-      {/if}
+      </div>
     {/if}
   </main>
 </div>
 
 <style>
-  :root {
+  :global(body) {
     font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-    color: #0f0f0f;
-    background-color: #f6f6f6;
   }
 
   .app {
@@ -507,7 +592,7 @@
     flex-shrink: 0;
     padding: 1.5rem 0.75rem;
     box-sizing: border-box;
-    border-right: 1px solid rgba(127, 127, 127, 0.25);
+    border-right: 1px solid var(--border);
     min-height: 100vh;
   }
 
@@ -539,13 +624,52 @@
     padding: 2rem 1.5rem;
   }
 
+  .workspace-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .workspace-header h1 {
+    margin: 0;
+  }
+
+  .workspace-controls {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+  }
+
+  .layout-presets {
+    display: flex;
+    gap: 0.2rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.2rem;
+    height: fit-content;
+  }
+
+  .layout-presets button {
+    font-size: 0.78rem;
+    padding: 0.2rem 0.5rem;
+    border: none;
+    background: transparent;
+  }
+
+  .layout-presets button.active {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+
   .tab-strip {
     display: flex;
     align-items: center;
     gap: 0.25rem;
     flex-wrap: wrap;
     margin-bottom: 0.75rem;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+    border-bottom: 1px solid var(--border);
     padding-bottom: 0.4rem;
   }
 
@@ -560,8 +684,8 @@
   }
 
   .tab.active {
-    background: rgba(127, 127, 127, 0.12);
-    border-color: rgba(127, 127, 127, 0.25);
+    background: var(--bg-hover);
+    border-color: var(--border);
     border-bottom-color: transparent;
   }
 
@@ -583,7 +707,7 @@
   }
 
   .dirty-dot {
-    color: #d18b00;
+    color: var(--warning);
     font-size: 1.1rem;
     line-height: 0;
   }
@@ -612,6 +736,42 @@
     flex: 1;
   }
 
+  .panel-chips {
+    display: flex;
+    gap: 0.35rem;
+    margin-top: 0.75rem;
+  }
+
+  .chip {
+    font-size: 0.78rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: transparent;
+    opacity: 0.55;
+  }
+
+  .chip.active {
+    opacity: 1;
+    background: var(--bg-hover);
+    border-color: var(--accent);
+  }
+
+  .content {
+    display: block;
+  }
+
+  .content.split {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-start;
+  }
+
+  .content.split .request-builder,
+  .content.split .response-column {
+    flex: 1;
+    min-width: 0;
+  }
+
   section {
     margin-top: 1rem;
     display: flex;
@@ -624,6 +784,7 @@
     align-items: center;
     gap: 0.75rem;
     font-size: 0.9rem;
+    margin-top: 1rem;
   }
 
   .environment details {
@@ -657,13 +818,14 @@
     font-family: inherit;
     font-size: 0.95rem;
     padding: 0.5rem;
-    border-radius: 6px;
-    border: 1px solid #ccc;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    color: var(--text);
+    background: var(--bg-elevated);
   }
 
   button {
     cursor: pointer;
-    background: #ffffff;
   }
 
   button:disabled {
@@ -672,30 +834,6 @@
   }
 
   .error {
-    color: #b00020;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color: #f6f6f6;
-      background-color: #2f2f2f;
-    }
-
-    .sidebar {
-      border-right-color: rgba(255, 255, 255, 0.15);
-    }
-
-    .tab-strip {
-      border-bottom-color: rgba(255, 255, 255, 0.15);
-    }
-
-    textarea,
-    input,
-    select,
-    button {
-      color: #f6f6f6;
-      background-color: #0f0f0f98;
-      border-color: #444;
-    }
+    color: var(--danger);
   }
 </style>

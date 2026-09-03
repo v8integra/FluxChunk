@@ -107,7 +107,7 @@
 
   .children {
     padding-left: 1.1rem;
-    border-left: 1px solid rgba(127, 127, 127, 0.2);
+    border-left: 1px solid var(--border);
     margin-left: 0.35rem;
   }
 
@@ -128,23 +128,23 @@
   }
 
   .json-key {
-    color: #a626a4;
+    color: var(--syntax-key);
   }
 
   .json-string {
-    color: #50a14f;
+    color: var(--syntax-string);
   }
 
   .json-number {
-    color: #4078f2;
+    color: var(--syntax-number);
   }
 
   .json-bool {
-    color: #c18401;
+    color: var(--syntax-bool);
   }
 
   .json-null {
-    color: #888;
+    color: var(--syntax-null);
   }
 
   .summary {
@@ -165,23 +165,5 @@
     background: rgba(255, 160, 0, 0.45);
     outline: 1px solid rgba(255, 160, 0, 0.8);
     border-radius: 3px;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .json-key {
-      color: #c678dd;
-    }
-    .json-string {
-      color: #98c379;
-    }
-    .json-number {
-      color: #61afef;
-    }
-    .json-bool {
-      color: #e5c07b;
-    }
-    .json-null {
-      color: #999;
-    }
   }
 </style>

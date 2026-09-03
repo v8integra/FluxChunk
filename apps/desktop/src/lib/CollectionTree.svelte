@@ -50,14 +50,16 @@
     font-size: 0.85rem;
     border-radius: 4px;
     cursor: pointer;
+    color: var(--text);
   }
 
   .request-item:hover {
-    background: rgba(127, 127, 127, 0.15);
+    background: var(--bg-hover);
   }
 
   .request-item.active {
-    background: rgba(80, 130, 255, 0.2);
+    background: var(--bg-hover);
+    box-shadow: inset 2px 0 0 var(--accent);
     font-weight: 600;
   }
 </style>

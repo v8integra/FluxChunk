@@ -116,21 +116,21 @@
     background: rgba(46, 160, 67, 0.15);
   }
   .status-added .marker {
-    color: #2ea043;
+    color: var(--success);
   }
 
   .status-removed {
     background: rgba(248, 81, 73, 0.15);
   }
   .status-removed .marker {
-    color: #f85149;
+    color: var(--danger);
   }
 
   .status-changed {
     background: rgba(210, 153, 34, 0.15);
   }
   .status-changed .marker {
-    color: #d29922;
+    color: var(--warning);
   }
 
   .status-unchanged {
@@ -138,11 +138,11 @@
   }
 
   .old-value {
-    color: #f85149;
+    color: var(--danger);
     text-decoration: line-through;
   }
 
   .new-value {
-    color: #2ea043;
+    color: var(--success);
   }
 </style>
