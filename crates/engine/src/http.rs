@@ -34,6 +34,12 @@ pub enum OutgoingBody {
 pub struct ResponseSummary {
     pub status: StatusCode,
     pub headers: IndexMap<String, String>,
+    /// Every `Set-Cookie` header value, unparsed. Kept separate from
+    /// `headers` because a response can send several, and folding them
+    /// into an `IndexMap<String, String>` (like every other header) would
+    /// silently keep only the last one -- exactly the case the Cookies
+    /// tab needs all of. See `crate::response::parse_set_cookie_headers`.
+    pub set_cookie_headers: Vec<String>,
     pub body: Vec<u8>,
     pub elapsed_ms: u128,
 }
@@ -94,11 +100,19 @@ impl HttpClient {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
             .collect();
+        let set_cookie_headers = response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .collect();
         let body = response.bytes().await?.to_vec();
 
         Ok(ResponseSummary {
             status,
             headers,
+            set_cookie_headers,
             body,
             elapsed_ms: started.elapsed().as_millis(),
         })

@@ -11,8 +11,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
-indexmap = "2"
+indexmap = { version = "2", features = ["serde"] }
 rquickjs = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

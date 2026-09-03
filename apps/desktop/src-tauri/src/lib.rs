@@ -3,11 +3,20 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use fluxchunk_engine::collection::{self, resolve_inherited_auth, CollectionItem};
+use fluxchunk_engine::diff::{self, DiffNode};
 use fluxchunk_engine::format::{ApiKeyPlacement, ApiRequestFile, Auth, Body, EnvironmentFile, OAuth2Config, VaultFile};
+use fluxchunk_engine::history::{self, HistoryEntrySummary, HistoryStore};
 use fluxchunk_engine::http::{HttpClient, Method, OutgoingBody, OutgoingRequest};
+use fluxchunk_engine::response::{self, BodyPreview, Cookie};
 use fluxchunk_engine::vars::{interpolate, merge_scopes, resolve_vault};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
+
+/// Spec section 10's own default ("last N runs per request, default ~20,
+/// configurable"). Not actually configurable yet -- that's a settings-tier
+/// UI (section 11) that doesn't exist for anything else either.
+const DEFAULT_HISTORY_RETENTION: u32 = 20;
 
 /// The single currently-loaded environment, if any. One at a time, same
 /// as `CollectionState` -- this app has one sidebar, one open collection.
@@ -31,6 +40,7 @@ struct CollectionState {
 struct AppState {
     environment: Mutex<EnvironmentState>,
     collection: Mutex<CollectionState>,
+    history: HistoryStore,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,23 +173,35 @@ struct SendResponseResult {
     status: u16,
     status_text: String,
     headers: HashMap<String, String>,
-    body: String,
+    /// Classified/gated per spec section 10 -- large bodies come back
+    /// without `json`/`text` populated; see `BodyPreview::exceeds_threshold`
+    /// and `load_full_response_body`.
+    body: BodyPreview,
+    cookies: Vec<Cookie>,
     elapsed_ms: u128,
     /// The URL actually requested, with `{{var}}`s resolved but
     /// `{{vault:...}}` refs deliberately left alone -- safe to show in
     /// the UI. Same rule `apicli` follows: a resolved secret is never
     /// echoed anywhere outside the actual outgoing request.
     resolved_url: String,
+    /// This send's row in response history -- already recorded by the
+    /// time this returns, so "compare against a past run" is just
+    /// diffing two history ids (see `diff_history`), this one included.
+    history_id: i64,
 }
 
 /// Sends a single request, resolving `{{var}}` / `{{vault:...}}`
 /// references against the currently loaded environment and collection
 /// (if any) first, and resolving `auth { mode: inherit }` against the
-/// collection's auth. The `.apireq` file round trip and scripting layer
-/// on top of this same path later.
+/// collection's auth. Records the result to response history under
+/// `request_key` (the caller's choice -- the frontend uses a saved
+/// request's file path, or a stable per-tab id for ad-hoc ones) before
+/// returning.
 #[tauri::command]
 async fn send_request(
     state: tauri::State<'_, AppState>,
+    request_key: String,
+    request_label: String,
     method: String,
     url: String,
     headers: HashMap<String, String>,
@@ -196,7 +218,7 @@ async fn send_request(
     };
     let vars = merge_scopes(&[&collection_vars, &env_vars]);
 
-    let method = Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|e| e.to_string())?;
+    let method_parsed = Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|e| e.to_string())?;
 
     let visible_url = interpolate(&url, &vars);
     let visible_headers: IndexMap<String, String> =
@@ -205,13 +227,12 @@ async fn send_request(
     let send_url = resolve_vault(&visible_url, &vault);
     let send_headers: IndexMap<String, String> =
         visible_headers.iter().map(|(k, v)| (k.clone(), resolve_vault(v, &vault))).collect();
-    let auth = resolve_inherited_auth(&auth.into_auth(), &collection_auth);
-    let resolved_auth = auth.resolve(&vars, &vault);
+    let resolved_auth = resolve_inherited_auth(&auth.into_auth(), &collection_auth).resolve(&vars, &vault);
     let resolved_body = body.map(|b| resolve_vault(&interpolate(&b, &vars), &vault));
 
     let outgoing = OutgoingRequest {
-        method,
-        url: send_url,
+        method: method_parsed,
+        url: send_url.clone(),
         headers: send_headers,
         auth: resolved_auth,
         body: resolved_body.map(OutgoingBody::Text),
@@ -222,16 +243,123 @@ async fn send_request(
 
     let status = resp.status.as_u16();
     let status_text = resp.status.canonical_reason().unwrap_or("").to_string();
-    let body = resp.body_as_text();
+    let content_type = resp.headers.get("content-type").cloned();
+
+    let body_preview = response::classify_and_preview(content_type.as_deref(), &resp.body, false);
+    let cookies = response::parse_set_cookie_headers(&resp.set_cookie_headers);
+    let headers_json = serde_json::to_string(&resp.headers).unwrap_or_else(|_| "{}".to_string());
+    let cookies_json = serde_json::to_string(&resp.set_cookie_headers).unwrap_or_else(|_| "[]".to_string());
+
+    // History storage happens here, on the actual response bytes, *before*
+    // they're gated by the size threshold above -- the gate only affects
+    // what crosses IPC to the webview right now, not what's kept for
+    // later ("Load full response", or opening this from history).
+    let history_id = state
+        .history
+        .record(
+            history::NewHistoryEntry {
+                request_key,
+                request_label,
+                method: method.to_uppercase(),
+                url: send_url,
+                status,
+                status_text: status_text.clone(),
+                headers_json,
+                cookies_json,
+                body: resp.body,
+                content_type,
+                elapsed_ms: resp.elapsed_ms as u64,
+            },
+            DEFAULT_HISTORY_RETENTION,
+        )
+        .map_err(|e| e.to_string())?;
 
     Ok(SendResponseResult {
         status,
         status_text,
         headers: resp.headers.into_iter().collect(),
-        body,
+        body: body_preview,
+        cookies,
         elapsed_ms: resp.elapsed_ms,
         resolved_url: visible_url,
+        history_id,
     })
+}
+
+/// Bypasses the size gate for one already-recorded response -- the "Load
+/// full response" action, or opening a large historical entry.
+#[tauri::command]
+fn load_full_response_body(state: tauri::State<AppState>, history_id: i64) -> Result<BodyPreview, String> {
+    let entry = state
+        .history
+        .get(history_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "history entry not found".to_string())?;
+    Ok(response::classify_and_preview(entry.content_type.as_deref(), &entry.body, true))
+}
+
+#[tauri::command]
+fn list_history(state: tauri::State<AppState>, request_key: String) -> Result<Vec<HistoryEntrySummary>, String> {
+    state.history.list_for_request(&request_key, DEFAULT_HISTORY_RETENTION).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_history(state: tauri::State<AppState>, request_key: String) -> Result<(), String> {
+    state.history.clear_for_request(&request_key).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryEntryDetail {
+    id: i64,
+    method: String,
+    url: String,
+    status: u16,
+    status_text: String,
+    headers: HashMap<String, String>,
+    cookies: Vec<Cookie>,
+    body: BodyPreview,
+    elapsed_ms: u64,
+    sent_at: i64,
+}
+
+/// Full detail for one history entry (status/headers/cookies/body,
+/// size-gated the same way a live send is) -- for viewing a past run in
+/// the response panel.
+#[tauri::command]
+fn get_history_entry(state: tauri::State<AppState>, id: i64) -> Result<HistoryEntryDetail, String> {
+    let entry = state.history.get(id).map_err(|e| e.to_string())?.ok_or_else(|| "history entry not found".to_string())?;
+    let headers: HashMap<String, String> = serde_json::from_str(&entry.headers_json).unwrap_or_default();
+    let set_cookie_headers: Vec<String> = serde_json::from_str(&entry.cookies_json).unwrap_or_default();
+
+    Ok(HistoryEntryDetail {
+        id: entry.id,
+        method: entry.method,
+        url: entry.url,
+        status: entry.status,
+        status_text: entry.status_text,
+        cookies: response::parse_set_cookie_headers(&set_cookie_headers),
+        body: response::classify_and_preview(entry.content_type.as_deref(), &entry.body, false),
+        headers,
+        elapsed_ms: entry.elapsed_ms,
+        sent_at: entry.sent_at,
+    })
+}
+
+/// Structural diff between two history entries' bodies (spec section 10)
+/// -- comparing the live response against a past run is just this with
+/// `a` set to the id `send_request` just returned, since that send is
+/// already in history too.
+#[tauri::command]
+fn diff_history(state: tauri::State<AppState>, a: i64, b: i64) -> Result<DiffNode, String> {
+    let entry_a = state.history.get(a).map_err(|e| e.to_string())?.ok_or_else(|| "history entry A not found".to_string())?;
+    let entry_b = state.history.get(b).map_err(|e| e.to_string())?.ok_or_else(|| "history entry B not found".to_string())?;
+
+    let json_a: serde_json::Value =
+        serde_json::from_slice(&entry_a.body).map_err(|_| "entry A's body isn't JSON -- structural diff only supports JSON".to_string())?;
+    let json_b: serde_json::Value =
+        serde_json::from_slice(&entry_b.body).map_err(|_| "entry B's body isn't JSON -- structural diff only supports JSON".to_string())?;
+
+    Ok(diff::diff_json(&json_a, &json_b))
 }
 
 /// Mirrors `fluxchunk_engine::collection::CollectionItem`, but with paths
@@ -390,9 +518,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState {
-            environment: Mutex::new(EnvironmentState::default()),
-            collection: Mutex::new(CollectionState::default()),
+        .setup(|app| {
+            let history_path = app.path().app_data_dir()?.join("history.sqlite3");
+            let history = HistoryStore::open(&history_path)?;
+            app.manage(AppState {
+                environment: Mutex::new(EnvironmentState::default()),
+                collection: Mutex::new(CollectionState::default()),
+                history,
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             send_request,
@@ -401,7 +535,12 @@ pub fn run() {
             open_collection,
             close_collection,
             read_request,
-            save_request
+            save_request,
+            load_full_response_body,
+            list_history,
+            clear_history,
+            get_history_entry,
+            diff_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -16,6 +16,9 @@ pub enum EngineError {
 
     #[error("script error: {0}")]
     Script(String),
+
+    #[error("history store error: {0}")]
+    History(#[from] rusqlite::Error),
 }
 
 impl From<rquickjs::Error> for EngineError {

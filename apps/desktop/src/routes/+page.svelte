@@ -2,15 +2,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import CollectionTree, { type TreeNode } from "$lib/CollectionTree.svelte";
-
-  type SendResponseResult = {
-    status: number;
-    status_text: string;
-    headers: Record<string, string>;
-    body: string;
-    elapsed_ms: number;
-    resolved_url: string;
-  };
+  import ResponsePanel from "$lib/ResponsePanel.svelte";
+  import type { SendResponseResult } from "$lib/types";
 
   type EnvironmentSummary = {
     name: string;
@@ -158,6 +151,14 @@
 
   function isDirty(tab: Tab): boolean {
     return tab.filePath !== null && snapshotOf(tab) !== tab.savedSnapshot;
+  }
+
+  /** Groups response history per request: a saved request's file path is
+   * stable across sends and even app restarts; an ad-hoc tab has no file,
+   * so its own (session-local) tab id keeps its history separate from
+   * every other ad-hoc tab instead of merging them all together. */
+  function requestKeyOf(tab: Tab): string {
+    return tab.filePath ?? tab.id;
   }
 
   // --- environments ---
@@ -317,6 +318,8 @@
     tab.response = null;
     try {
       tab.response = await invoke<SendResponseResult>("send_request", {
+        requestKey: requestKeyOf(tab),
+        requestLabel: tab.title,
         method: tab.method,
         url: tab.url,
         headers: parseHeaders(tab.headersText),
@@ -480,11 +483,7 @@
       {/if}
 
       {#if tab.response}
-        <section class="response">
-          <h2>{tab.response.status} {tab.response.status_text} &middot; {tab.response.elapsed_ms}ms</h2>
-          <p class="resolved-url">{tab.response.resolved_url}</p>
-          <pre>{tab.response.body}</pre>
-        </section>
+        <ResponsePanel response={tab.response} requestKey={requestKeyOf(tab)} />
       {/if}
     {/if}
   </main>
@@ -535,7 +534,7 @@
 
   main {
     flex: 1;
-    max-width: 900px;
+    max-width: 1200px;
     margin: 0 auto;
     padding: 2rem 1.5rem;
   }
@@ -651,13 +650,6 @@
     opacity: 0.7;
   }
 
-  .resolved-url {
-    margin: 0 0 0.5rem;
-    font-size: 0.85rem;
-    opacity: 0.7;
-    word-break: break-all;
-  }
-
   textarea,
   input,
   select,
@@ -677,17 +669,6 @@
   button:disabled {
     opacity: 0.55;
     cursor: default;
-  }
-
-  pre {
-    white-space: pre-wrap;
-    word-break: break-word;
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    padding: 0.75rem;
-    max-height: 50vh;
-    overflow: auto;
   }
 
   .error {
@@ -711,8 +692,7 @@
     textarea,
     input,
     select,
-    button,
-    pre {
+    button {
       color: #f6f6f6;
       background-color: #0f0f0f98;
       border-color: #444;
