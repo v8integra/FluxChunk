@@ -37,7 +37,7 @@ impl Body {
         }
     }
 
-    fn content(&self) -> &str {
+    pub fn content(&self) -> &str {
         match self {
             Body::Json(s)
             | Body::Raw(s)

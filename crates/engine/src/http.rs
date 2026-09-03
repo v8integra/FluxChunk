@@ -93,22 +93,27 @@ impl HttpClient {
 
 /// Builds an `OutgoingRequest` from a parsed `.apireq`, with `{{var}}`
 /// interpolation already applied to the URL, headers, and body by the
-/// caller (see `crate::vars::interpolate`). Query/path params are merged
-/// into the final URL here.
+/// caller (see `crate::vars::resolve_for_send`), `resolved_body` likewise
+/// (pass `None` when the request has no body). Query/path params are
+/// merged into the final URL by the caller, not here.
 pub fn build_outgoing_request(
     file: &ApiRequestFile,
     resolved_url: String,
     resolved_headers: IndexMap<String, String>,
+    resolved_body: Option<String>,
 ) -> Result<OutgoingRequest, EngineError> {
     let method = Method::from_bytes(file.method.to_uppercase().as_bytes())
         .map_err(|_| EngineError::ParseFormat(format!("unknown HTTP method '{}'", file.method)))?;
 
-    let body = file.body.as_ref().map(|b| match b {
-        Body::Json(s) => OutgoingBody::Json(s.clone()),
-        Body::Raw(s) | Body::Text(s) | Body::Xml(s) | Body::FormData(s) | Body::UrlEncoded(s) | Body::GraphQl(s) => {
-            OutgoingBody::Text(s.clone())
+    // Every non-JSON body kind (raw/text/xml/form-data/urlencoded/graphql,
+    // and binary until real file reads are wired up) is sent as opaque
+    // text — only `body:json` gets the JSON content-type treatment.
+    let body = resolved_body.map(|content| {
+        if matches!(file.body, Some(Body::Json(_))) {
+            OutgoingBody::Json(content)
+        } else {
+            OutgoingBody::Text(content)
         }
-        Body::Binary(path) => OutgoingBody::Text(path.clone()), // real file read wired up when binary bodies land
     });
 
     Ok(OutgoingRequest {

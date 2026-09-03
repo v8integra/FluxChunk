@@ -1,0 +1,4 @@
+vars {
+  base_url: https://httpbin.org
+  api_key: {{vault:api_key}}
+}

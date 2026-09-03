@@ -4,8 +4,12 @@
 //! alongside `apireq` as those parts of the app get built; `blocks` is
 //! shared by all three.
 
+pub mod apienv;
 pub mod apireq;
 pub mod blocks;
+pub mod vault;
 
+pub use apienv::EnvironmentFile;
 pub use apireq::{ApiRequestFile, Assertion, Body, Meta};
 pub use blocks::RawBlock;
+pub use vault::VaultFile;
