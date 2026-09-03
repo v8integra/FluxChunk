@@ -9,6 +9,7 @@ use fluxchunk_engine::diff::{self, DiffNode};
 use fluxchunk_engine::format::{ApiKeyPlacement, ApiRequestFile, Auth, Body, EnvironmentFile, OAuth2Config, VaultFile};
 use fluxchunk_engine::history::{self, HistoryEntrySummary, HistoryStore};
 use fluxchunk_engine::http::{HttpClient, Method, OutgoingBody, OutgoingRequest};
+use fluxchunk_engine::import;
 use fluxchunk_engine::response::{self, BodyPreview, Cookie};
 use fluxchunk_engine::vars::{interpolate, merge_scopes, resolve_vault};
 use indexmap::IndexMap;
@@ -462,6 +463,50 @@ fn close_collection(state: tauri::State<AppState>) {
 }
 
 #[derive(Debug, Serialize)]
+struct ImportSummary {
+    name: String,
+    /// Where it actually landed -- `<parent_dir>/<slugified name>` -- so
+    /// the frontend can immediately `open_collection` it without having
+    /// to reconstruct the slug itself.
+    collection_path: String,
+    request_count: usize,
+    warnings: Vec<String>,
+}
+
+fn finish_import(imported: import::ImportedCollection, parent_dir: &str) -> Result<ImportSummary, String> {
+    let slug = import::slugify(&imported.name);
+    let dest = PathBuf::from(parent_dir).join(if slug.is_empty() { "imported-collection".to_string() } else { slug });
+    import::write_imported_collection(&imported, &dest).map_err(|e| e.to_string())?;
+
+    Ok(ImportSummary {
+        name: imported.name,
+        collection_path: dest.to_string_lossy().to_string(),
+        request_count: imported.requests.len(),
+        warnings: imported.warnings,
+    })
+}
+
+/// Imports a Postman Collection v2.1 JSON export into a new collection
+/// folder under `parent_dir` (spec section 5: "Import: Postman
+/// collections, OpenAPI specs" -- explicitly without the security
+/// scanning from section 8, a separate later step).
+#[tauri::command]
+fn import_postman_collection(source_path: String, parent_dir: String) -> Result<ImportSummary, String> {
+    let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
+    let imported = import::postman::import_postman_collection(&json).map_err(|e| e.to_string())?;
+    finish_import(imported, &parent_dir)
+}
+
+/// Same, for an OpenAPI 3.x or Swagger 2.0 JSON document. YAML specs
+/// aren't supported yet -- see the module docs on `fluxchunk_engine::import::openapi`.
+#[tauri::command]
+fn import_openapi_spec(source_path: String, parent_dir: String) -> Result<ImportSummary, String> {
+    let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
+    let imported = import::openapi::import_openapi_spec(&json).map_err(|e| e.to_string())?;
+    finish_import(imported, &parent_dir)
+}
+
+#[derive(Debug, Serialize)]
 struct RequestSummary {
     name: String,
     method: String,
@@ -549,6 +594,8 @@ pub fn run() {
             clear_environment,
             open_collection,
             close_collection,
+            import_postman_collection,
+            import_openapi_spec,
             read_request,
             save_request,
             load_full_response_body,

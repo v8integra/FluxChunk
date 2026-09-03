@@ -40,6 +40,13 @@
     environments: { name: string; path: string }[];
   };
 
+  type ImportSummaryDto = {
+    name: string;
+    collection_path: string;
+    request_count: number;
+    warnings: string[];
+  };
+
   type Tab = {
     id: string;
     title: string;
@@ -279,6 +286,54 @@
     collectionEnvironments = [];
   }
 
+  // --- import (Postman / OpenAPI) ---
+
+  let importSummary = $state<ImportSummaryDto | null>(null);
+
+  async function importCollection(kind: "postman" | "openapi") {
+    sidebarError = "";
+    importSummary = null;
+
+    let sourcePath: string | null;
+    try {
+      sourcePath = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: kind === "postman" ? "Postman Collection" : "OpenAPI / Swagger", extensions: ["json"] }],
+      });
+    } catch (e) {
+      sidebarError = String(e);
+      return;
+    }
+    if (!sourcePath) return;
+
+    // Import creates a new folder (named after the collection) inside
+    // whatever directory is picked here, rather than writing directly
+    // into it -- avoids dumping collection.apicol and request folders
+    // into a directory that might already hold unrelated files.
+    let parentDir: string | null;
+    try {
+      parentDir = await open({ directory: true, multiple: false });
+    } catch (e) {
+      sidebarError = String(e);
+      return;
+    }
+    if (!parentDir) return;
+
+    try {
+      const command = kind === "postman" ? "import_postman_collection" : "import_openapi_spec";
+      const summary = await invoke<ImportSummaryDto>(command, { sourcePath, parentDir });
+      importSummary = summary;
+
+      const opened = await invoke<CollectionSummary>("open_collection", { path: summary.collection_path });
+      collectionName = opened.name;
+      collectionItems = opened.items;
+      collectionEnvironments = opened.environments;
+    } catch (e) {
+      sidebarError = String(e);
+    }
+  }
+
   // --- tabs ---
 
   function addTab() {
@@ -400,6 +455,12 @@
 <div class="app">
   {#if layoutPreset !== "focus"}
     <aside class="sidebar">
+      <div class="sidebar-toolbar">
+        <button type="button" onclick={openCollection}>Open Collection...</button>
+        <button type="button" onclick={() => importCollection("postman")}>Import Postman...</button>
+        <button type="button" onclick={() => importCollection("openapi")}>Import OpenAPI...</button>
+      </div>
+
       {#if collectionName}
         <div class="sidebar-header">
           <strong>{collectionName}</strong>
@@ -414,8 +475,25 @@
         {/if}
         <CollectionTree items={collectionItems} onSelect={openRequestInTab} activePath={activeTab?.filePath ?? null} />
       {:else}
-        <button type="button" onclick={openCollection}>Open Collection...</button>
+        <p class="hint">No collection open.</p>
       {/if}
+
+      {#if importSummary}
+        <div class="import-summary">
+          <p>Imported {importSummary.request_count} request(s) into "{importSummary.name}".</p>
+          {#if importSummary.warnings.length > 0}
+            <details>
+              <summary>{importSummary.warnings.length} warning(s)</summary>
+              <ul>
+                {#each importSummary.warnings as w, i (i)}
+                  <li>{w}</li>
+                {/each}
+              </ul>
+            </details>
+          {/if}
+        </div>
+      {/if}
+
       {#if sidebarError}
         <p class="error">{sidebarError}</p>
       {/if}
@@ -596,6 +674,19 @@
     min-height: 100vh;
   }
 
+  .sidebar-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .sidebar-toolbar button {
+    font-size: 0.8rem;
+    padding: 0.3rem 0.5rem;
+    text-align: left;
+  }
+
   .sidebar-header {
     display: flex;
     align-items: center;
@@ -603,6 +694,18 @@
     gap: 0.5rem;
     font-size: 0.9rem;
     margin-bottom: 0.5rem;
+  }
+
+  .import-summary {
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+  }
+
+  .import-summary ul {
+    margin: 0.25rem 0 0;
+    padding-left: 1.1rem;
   }
 
   .env-quick-pick {

@@ -1,0 +1,48 @@
+{
+  "info": {
+    "name": "Sample Import Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://httpbin.org" }
+  ],
+  "item": [
+    {
+      "name": "Basics",
+      "item": [
+        {
+          "name": "Get IP",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/ip" }
+          }
+        },
+        {
+          "name": "Create thing",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{base_url}}/post",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"widget\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get headers (bearer)",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/headers",
+        "auth": {
+          "type": "bearer",
+          "bearer": [{ "key": "token", "value": "demo-imported-token" }]
+        }
+      }
+    }
+  ]
+}

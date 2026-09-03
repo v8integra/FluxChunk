@@ -1,0 +1,20 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "Sample OpenAPI Import" },
+  "servers": [{ "url": "https://httpbin.org" }],
+  "paths": {
+    "/get": {
+      "get": {
+        "summary": "Simple get",
+        "tags": ["Basics"]
+      }
+    },
+    "/status/{code}": {
+      "get": {
+        "summary": "Get status by code",
+        "tags": ["Basics"],
+        "parameters": [{ "name": "code", "in": "path", "required": true }]
+      }
+    }
+  }
+}
