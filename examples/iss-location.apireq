@@ -1,0 +1,13 @@
+meta {
+  name: Get ISS location
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://api.wheretheiss.at/v1/satellites/25544
+}
+
+headers {
+  Accept: application/json
+}

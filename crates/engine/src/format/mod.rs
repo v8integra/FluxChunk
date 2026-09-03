@@ -1,0 +1,11 @@
+//! The `.apireq`/`.apicol`/`.apienv` file format: a custom lightweight
+//! labeled-block format (see `api-client-spec.md` section 4). `.apicol`
+//! (collection manifest) and `.apienv` (environment) typed layers land
+//! alongside `apireq` as those parts of the app get built; `blocks` is
+//! shared by all three.
+
+pub mod apireq;
+pub mod blocks;
+
+pub use apireq::{ApiRequestFile, Assertion, Body, Meta};
+pub use blocks::RawBlock;

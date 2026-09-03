@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/target/
+
+# Node / frontend
+node_modules/
+dist/
+apps/desktop/src-tauri/target/
+
+# Tauri
+apps/desktop/src-tauri/gen/
+
+# Vault secrets — never committed, per spec section 4/11
+*.apienv.vault
+
+# Local app data (dev runs)
+.fluxchunk-dev/
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

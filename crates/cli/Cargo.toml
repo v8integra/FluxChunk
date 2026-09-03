@@ -1,0 +1,15 @@
+[package]
+name = "fluxchunk-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "apicli"
+path = "src/main.rs"
+
+[dependencies]
+fluxchunk-engine = { path = "../engine" }
+tokio.workspace = true
+anyhow.workspace = true
+indexmap = "2"
