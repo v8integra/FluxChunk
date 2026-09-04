@@ -4,8 +4,10 @@
   import CollectionTree, { type TreeNode } from "$lib/CollectionTree.svelte";
   import ImportDialog, { type ImportPreviewDto } from "$lib/ImportDialog.svelte";
   import ResponsePanel from "$lib/ResponsePanel.svelte";
+  import SettingsPanel from "$lib/SettingsPanel.svelte";
   import ThemeSwitcher, { type Theme } from "$lib/ThemeSwitcher.svelte";
   import Tour, { type TourStep } from "$lib/Tour.svelte";
+  import UpdateDialog, { type UpdateInfo, type UpdateStage } from "$lib/UpdateDialog.svelte";
   import type { SendResponseResult } from "$lib/types";
 
   type EnvironmentSummary = {
@@ -126,12 +128,21 @@
   const LAYOUT_PRESETS: LayoutPreset[] = ["split", "stacked", "focus"];
 
   type PanelVisibility = { headers: boolean; auth: boolean; body: boolean };
-  type SettingsDto = { theme: Theme; layout_preset: LayoutPreset; panels: PanelVisibility; has_seen_tour: boolean };
+  type SettingsDto = {
+    theme: Theme;
+    layout_preset: LayoutPreset;
+    panels: PanelVisibility;
+    has_seen_tour: boolean;
+    auto_check_updates: boolean;
+    update_check_url: string;
+  };
 
   let theme = $state<Theme>("light");
   let layoutPreset = $state<LayoutPreset>("stacked");
   let panels = $state<PanelVisibility>({ headers: true, auth: true, body: true });
   let hasSeenTour = $state(false);
+  let autoCheckUpdates = $state(false);
+  let updateCheckUrl = $state("");
   let settingsLoaded = $state(false);
 
   $effect(() => {
@@ -146,10 +157,19 @@
     void panels.auth;
     void panels.body;
     void hasSeenTour;
+    void autoCheckUpdates;
+    void updateCheckUrl;
     if (!settingsLoaded) return; // don't clobber the saved file with defaults before the initial load lands
-    invoke("save_settings", { settings: { theme, layout_preset: layoutPreset, panels, has_seen_tour: hasSeenTour } }).catch((e) =>
-      console.error(e),
-    );
+    invoke("save_settings", {
+      settings: {
+        theme,
+        layout_preset: layoutPreset,
+        panels,
+        has_seen_tour: hasSeenTour,
+        auto_check_updates: autoCheckUpdates,
+        update_check_url: updateCheckUrl,
+      },
+    }).catch((e) => console.error(e));
   });
 
   async function loadSettings() {
@@ -159,12 +179,21 @@
       layoutPreset = s.layout_preset;
       panels = s.panels;
       hasSeenTour = s.has_seen_tour;
+      autoCheckUpdates = s.auto_check_updates;
+      updateCheckUrl = s.update_check_url;
       // Spec section 12: "Auto-launches on first install" -- and only
       // then; the persistent "Take the tour" control below covers anyone
       // who wants it again later.
       if (!hasSeenTour) {
         tourStep = 0;
         showTour = true;
+      }
+      // Spec section 13: "automatic checks OFF by default" -- only check
+      // here at all if the user turned this on. Silent either way: no
+      // dialog for "you're up to date", and a failed background check
+      // just logs rather than surfacing an alarming popup on launch.
+      if (autoCheckUpdates) {
+        checkForUpdates(true);
       }
     } catch (e) {
       console.error(e);
@@ -173,6 +202,68 @@
     }
   }
   loadSettings();
+
+  // --- updates (spec section 13) ---
+
+  let updateStage = $state<UpdateStage | null>(null);
+  let updateInfo = $state<UpdateInfo | null>(null);
+  let updateError = $state("");
+  let showSettingsPanel = $state(false);
+
+  async function checkForUpdates(silent = false) {
+    if (!silent) {
+      updateStage = "checking";
+      updateError = "";
+    }
+    try {
+      const info = await invoke<UpdateInfo | null>("check_for_updates");
+      if (info) {
+        updateInfo = info;
+        updateStage = "available";
+      } else if (!silent) {
+        updateStage = "up-to-date";
+      }
+    } catch (e) {
+      if (silent) {
+        console.error(e);
+      } else {
+        updateError = String(e);
+        updateStage = "error";
+      }
+    }
+  }
+
+  async function approveDownload() {
+    updateStage = "downloading";
+    updateError = "";
+    try {
+      await invoke("download_update");
+      updateStage = "ready";
+    } catch (e) {
+      updateError = String(e);
+      updateStage = "error";
+    }
+  }
+
+  async function installAndRestart() {
+    try {
+      await invoke("install_and_restart");
+      // The app exits and relaunches from here -- nothing left to do.
+    } catch (e) {
+      updateError = String(e);
+    }
+  }
+
+  function dismissUpdateDialog() {
+    updateStage = null;
+    updateInfo = null;
+    updateError = "";
+  }
+
+  function onSettingsChange(auto: boolean, url: string) {
+    autoCheckUpdates = auto;
+    updateCheckUrl = url;
+  }
 
   // --- first-run tour (spec section 12) ---
 
@@ -629,6 +720,8 @@
         </div>
         <ThemeSwitcher {theme} onChange={(t) => (theme = t)} />
         <button type="button" class="tour-button" title="Take the tour" onclick={startTour}>?</button>
+        <button type="button" class="update-button" title="Check for Updates" onclick={() => checkForUpdates(false)}>&#8635;</button>
+        <button type="button" class="settings-button" title="Settings" onclick={() => (showSettingsPanel = true)}>&#9881;</button>
       </div>
     </div>
 
@@ -777,6 +870,27 @@
   <Tour steps={TOUR_STEPS} step={tourStep} onNext={() => tourStep++} onBack={() => tourStep--} onSkip={endTour} onFinish={endTour} />
 {/if}
 
+{#if updateStage}
+  <UpdateDialog
+    stage={updateStage}
+    info={updateInfo}
+    error={updateError}
+    onApproveDownload={approveDownload}
+    onInstallAndRestart={installAndRestart}
+    onDismiss={dismissUpdateDialog}
+  />
+{/if}
+
+{#if showSettingsPanel}
+  <SettingsPanel
+    {autoCheckUpdates}
+    {updateCheckUrl}
+    onChange={onSettingsChange}
+    onClose={() => (showSettingsPanel = false)}
+    onCheckNow={() => checkForUpdates(false)}
+  />
+{/if}
+
 <style>
   :global(body) {
     font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
@@ -867,7 +981,9 @@
     gap: 0.6rem;
   }
 
-  .tour-button {
+  .tour-button,
+  .update-button,
+  .settings-button {
     width: 1.9rem;
     height: 1.9rem;
     padding: 0;

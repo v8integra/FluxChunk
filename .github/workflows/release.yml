@@ -1,0 +1,54 @@
+name: Release
+
+# Spec section 15: Windows-only beta packaging (NSIS + MSI), spec section 13's
+# update feed. Triggered by pushing a tag like "v0.2.0" -- tauri-action reads
+# the version out of tauri.conf.json / Cargo.toml, so the tag is just what
+# starts the run, not the source of truth for the version number.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Type-check frontend
+        working-directory: apps/desktop
+        run: npm run check
+
+      # spec section 12's beta framing: every tag is published as a
+      # pre-release until there's a stable-channel decision to make.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "FluxChunk ${{ github.ref_name }}"
+          releaseBody: "See CHANGELOG for details."
+          releaseDraft: true
+          prerelease: true
+          includeUpdaterJson: true

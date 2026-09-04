@@ -46,6 +46,16 @@ struct AppState {
     collection: Mutex<CollectionState>,
     history: HistoryStore,
     settings_path: PathBuf,
+    /// The `Update` handle from the most recent `check_for_updates` call,
+    /// if one found something newer -- `download_update` and
+    /// `install_and_restart` operate on it. `tokio::sync::Mutex` (not
+    /// `std::sync::Mutex`) because it's held across `.await` points.
+    pending_update: tokio::sync::Mutex<Option<tauri_plugin_updater::Update>>,
+    /// The bytes `download_update` fetched, handed to `install_and_restart`
+    /// -- spec section 13's "separate 'Install and Restart' action" means
+    /// these two are genuinely different IPC calls, potentially with the
+    /// user doing other things in between.
+    pending_update_bytes: tokio::sync::Mutex<Option<Vec<u8>>>,
 }
 
 #[tauri::command]
@@ -56,6 +66,76 @@ fn load_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
 #[tauri::command]
 fn save_settings(state: tauri::State<AppState>, settings: Settings) -> Result<(), String> {
     settings::save(&state.settings_path, &settings)
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateInfo {
+    version: String,
+    notes: Option<String>,
+    pub_date: Option<String>,
+}
+
+/// Checks for an update against the configured endpoint (the enterprise
+/// override in settings, if set, else the default baked into
+/// tauri.conf.json). Returns `None` when already up to date. Every call
+/// replaces any previously pending update/downloaded bytes -- "can check
+/// again anytime" (spec section 13) always starts a fresh cycle rather
+/// than risking a stale download getting installed against a check
+/// result it doesn't match.
+#[tauri::command]
+async fn check_for_updates(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<Option<UpdateInfo>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let current_settings = settings::load(&state.settings_path)?;
+    let mut builder = app.updater_builder();
+    if !current_settings.update_check_url.trim().is_empty() {
+        let endpoint = url::Url::parse(current_settings.update_check_url.trim()).map_err(|e| format!("invalid update check URL: {e}"))?;
+        builder = builder.endpoints(vec![endpoint]).map_err(|e| e.to_string())?;
+    }
+    let updater = builder.build().map_err(|e| e.to_string())?;
+    let found = updater.check().await.map_err(|e| e.to_string())?;
+
+    let info = found.as_ref().map(|u| UpdateInfo {
+        version: u.version.clone(),
+        notes: u.body.clone(),
+        pub_date: u.date.map(|d| d.to_string()),
+    });
+
+    *state.pending_update.lock().await = found;
+    *state.pending_update_bytes.lock().await = None;
+
+    Ok(info)
+}
+
+/// Spec section 13's "Approve & Download" -- fetches the update `check_for_updates`
+/// found, but doesn't install it yet.
+#[tauri::command]
+async fn download_update(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let guard = state.pending_update.lock().await;
+    let Some(update) = guard.as_ref() else {
+        return Err("no update to download -- check for updates first".to_string());
+    };
+    let bytes = update.download(|_chunk_len, _total_len| {}, || {}).await.map_err(|e| e.to_string())?;
+    drop(guard);
+    *state.pending_update_bytes.lock().await = Some(bytes);
+    Ok(())
+}
+
+/// Spec section 13's separate "Install and Restart" action -- applies the
+/// already-downloaded bytes and relaunches. Requires `download_update` to
+/// have completed first; won't silently re-download.
+#[tauri::command]
+async fn install_and_restart(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let update_guard = state.pending_update.lock().await;
+    let Some(update) = update_guard.as_ref() else {
+        return Err("no pending update -- check for updates first".to_string());
+    };
+    let bytes_guard = state.pending_update_bytes.lock().await;
+    let Some(bytes) = bytes_guard.as_ref() else {
+        return Err("update hasn't been downloaded yet".to_string());
+    };
+    update.install(bytes).map_err(|e| e.to_string())?;
+    app.restart();
 }
 
 #[derive(Debug, Serialize)]
@@ -653,9 +733,19 @@ fn save_request(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    // The updater plugin isn't meaningful (and may not build) on mobile
+    // targets -- there's no mobile build of FluxChunk yet, but this
+    // matches the plugin's own documented guidance and the mobile-only
+    // cfg_attr already present below, rather than assuming desktop-only
+    // forever.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let history = HistoryStore::open(&app_data_dir.join("history.sqlite3"))?;
@@ -664,6 +754,8 @@ pub fn run() {
                 collection: Mutex::new(CollectionState::default()),
                 history,
                 settings_path: app_data_dir.join("config.toml"),
+                pending_update: tokio::sync::Mutex::new(None),
+                pending_update_bytes: tokio::sync::Mutex::new(None),
             });
             Ok(())
         })
@@ -685,7 +777,10 @@ pub fn run() {
             get_history_entry,
             diff_history,
             load_settings,
-            save_settings
+            save_settings,
+            check_for_updates,
+            download_update,
+            install_and_restart
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

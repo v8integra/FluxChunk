@@ -36,6 +36,15 @@ pub struct Settings {
     /// tour" toolbar control covers wanting to see it again. Skipping
     /// counts the same as finishing; either way this flips to `true`.
     pub has_seen_tour: bool,
+    /// Spec section 13: "Strictly opt-in: automatic checks OFF by
+    /// default." The manual "Check for Updates" button ignores this
+    /// entirely -- it's always available regardless.
+    pub auto_check_updates: bool,
+    /// Spec section 13's "enterprise override": empty means use the
+    /// endpoint baked into tauri.conf.json (the public GitHub Releases
+    /// feed); non-empty overrides it, e.g. for an internally hosted
+    /// manifest, air-gapped from the public internet.
+    pub update_check_url: String,
 }
 
 impl Default for Settings {
@@ -45,6 +54,8 @@ impl Default for Settings {
             layout_preset: "stacked".to_string(),
             panels: PanelVisibility::default(),
             has_seen_tour: false,
+            auto_check_updates: false,
+            update_check_url: String::new(),
         }
     }
 }
@@ -110,6 +121,26 @@ mod tests {
         settings.has_seen_tour = true;
         save(&path, &settings).unwrap();
         assert!(load(&path).unwrap().has_seen_tour);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_settings_default_off_and_round_trip() {
+        let dir = std::env::temp_dir().join(format!("fluxchunk-settings-test-update-{}", std::process::id()));
+        let path = dir.join("config.toml");
+
+        let defaults = Settings::default();
+        assert!(!defaults.auto_check_updates);
+        assert_eq!(defaults.update_check_url, "");
+
+        let mut settings = Settings::default();
+        settings.auto_check_updates = true;
+        settings.update_check_url = "https://updates.internal.example/latest.json".to_string();
+        save(&path, &settings).unwrap();
+        let loaded = load(&path).unwrap();
+        assert!(loaded.auto_check_updates);
+        assert_eq!(loaded.update_check_url, "https://updates.internal.example/latest.json");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

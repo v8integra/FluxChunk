@@ -23,7 +23,8 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -31,5 +32,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVDRUUzQkIxMzA3QjNCRUMKUldUc08zc3dzVHZ1WE51dGFrWTI1WUw0NjE3bUlMcm1PUUVpQXFWM25MMDd0anQ1UjFIZHVuQmgK",
+      "endpoints": [
+        "https://github.com/v8integra/FluxChunk/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
