@@ -31,6 +31,11 @@ pub struct Settings {
     pub theme: String,
     pub layout_preset: String,
     pub panels: PanelVisibility,
+    /// Spec section 12: the first-run tour "auto-launches on first
+    /// install" and never again on its own -- the persistent "Take the
+    /// tour" toolbar control covers wanting to see it again. Skipping
+    /// counts the same as finishing; either way this flips to `true`.
+    pub has_seen_tour: bool,
 }
 
 impl Default for Settings {
@@ -39,6 +44,7 @@ impl Default for Settings {
             theme: "light".to_string(),
             layout_preset: "stacked".to_string(),
             panels: PanelVisibility::default(),
+            has_seen_tour: false,
         }
     }
 }
@@ -89,6 +95,35 @@ mod tests {
         assert_eq!(loaded.layout_preset, "split");
         assert!(!loaded.panels.body);
         assert!(loaded.panels.headers);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn has_seen_tour_defaults_false_and_round_trips_true() {
+        let dir = std::env::temp_dir().join(format!("fluxchunk-settings-test-tour-{}", std::process::id()));
+        let path = dir.join("config.toml");
+
+        assert!(!Settings::default().has_seen_tour);
+
+        let mut settings = Settings::default();
+        settings.has_seen_tour = true;
+        save(&path, &settings).unwrap();
+        assert!(load(&path).unwrap().has_seen_tour);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_file_from_before_has_seen_tour_existed_still_loads() {
+        let dir = std::env::temp_dir().join(format!("fluxchunk-settings-test-upgrade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "theme = \"dark\"\nlayout_preset = \"focus\"\n").unwrap();
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.theme, "dark");
+        assert!(!loaded.has_seen_tour); // missing field -> default, not an error
 
         let _ = std::fs::remove_dir_all(&dir);
     }

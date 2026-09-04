@@ -5,6 +5,7 @@
   import ImportDialog, { type ImportPreviewDto } from "$lib/ImportDialog.svelte";
   import ResponsePanel from "$lib/ResponsePanel.svelte";
   import ThemeSwitcher, { type Theme } from "$lib/ThemeSwitcher.svelte";
+  import Tour, { type TourStep } from "$lib/Tour.svelte";
   import type { SendResponseResult } from "$lib/types";
 
   type EnvironmentSummary = {
@@ -125,11 +126,12 @@
   const LAYOUT_PRESETS: LayoutPreset[] = ["split", "stacked", "focus"];
 
   type PanelVisibility = { headers: boolean; auth: boolean; body: boolean };
-  type SettingsDto = { theme: Theme; layout_preset: LayoutPreset; panels: PanelVisibility };
+  type SettingsDto = { theme: Theme; layout_preset: LayoutPreset; panels: PanelVisibility; has_seen_tour: boolean };
 
   let theme = $state<Theme>("light");
   let layoutPreset = $state<LayoutPreset>("stacked");
   let panels = $state<PanelVisibility>({ headers: true, auth: true, body: true });
+  let hasSeenTour = $state(false);
   let settingsLoaded = $state(false);
 
   $effect(() => {
@@ -143,8 +145,11 @@
     void panels.headers;
     void panels.auth;
     void panels.body;
+    void hasSeenTour;
     if (!settingsLoaded) return; // don't clobber the saved file with defaults before the initial load lands
-    invoke("save_settings", { settings: { theme, layout_preset: layoutPreset, panels } }).catch((e) => console.error(e));
+    invoke("save_settings", { settings: { theme, layout_preset: layoutPreset, panels, has_seen_tour: hasSeenTour } }).catch((e) =>
+      console.error(e),
+    );
   });
 
   async function loadSettings() {
@@ -153,6 +158,14 @@
       theme = s.theme;
       layoutPreset = s.layout_preset;
       panels = s.panels;
+      hasSeenTour = s.has_seen_tour;
+      // Spec section 12: "Auto-launches on first install" -- and only
+      // then; the persistent "Take the tour" control below covers anyone
+      // who wants it again later.
+      if (!hasSeenTour) {
+        tourStep = 0;
+        showTour = true;
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -160,6 +173,44 @@
     }
   }
   loadSettings();
+
+  // --- first-run tour (spec section 12) ---
+
+  const TOUR_STEPS: TourStep[] = [
+    {
+      title: "Welcome to FluxChunk",
+      body: "A local-first, Git-native API client. Five short steps to get oriented -- skip anytime.",
+    },
+    {
+      title: "Send a real request",
+      body: "You're already set up with a live request to the International Space Station's tracking API. Hit Send below and watch it actually happen.",
+    },
+    {
+      title: "Read the response",
+      body: "That's real, live data -- not a mock. Pretty gives you a structured, searchable tree; Raw shows the exact bytes; History keeps every past run.",
+    },
+    {
+      title: "Where collections live",
+      body: "The sidebar on the left is where you open, import, or build multi-request collections -- plain text files you can put straight into Git.",
+    },
+    {
+      title: "Make it yours",
+      body: "Theme and layout live in the top right. Pick a look and a panel arrangement that works for you.",
+    },
+  ];
+
+  let showTour = $state(false);
+  let tourStep = $state(0);
+
+  function startTour() {
+    tourStep = 0;
+    showTour = true;
+  }
+
+  function endTour() {
+    showTour = false;
+    hasSeenTour = true;
+  }
 
   function capitalize(s: string): string {
     return s[0].toUpperCase() + s.slice(1);
@@ -577,6 +628,7 @@
           {/each}
         </div>
         <ThemeSwitcher {theme} onChange={(t) => (theme = t)} />
+        <button type="button" class="tour-button" title="Take the tour" onclick={startTour}>?</button>
       </div>
     </div>
 
@@ -721,6 +773,10 @@
   </main>
 </div>
 
+{#if showTour}
+  <Tour steps={TOUR_STEPS} step={tourStep} onNext={() => tourStep++} onBack={() => tourStep--} onSkip={endTour} onFinish={endTour} />
+{/if}
+
 <style>
   :global(body) {
     font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
@@ -809,6 +865,14 @@
     display: flex;
     align-items: flex-start;
     gap: 0.6rem;
+  }
+
+  .tour-button {
+    width: 1.9rem;
+    height: 1.9rem;
+    padding: 0;
+    border-radius: 50%;
+    font-weight: 700;
   }
 
   .layout-presets {
