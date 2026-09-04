@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import CollectionTree, { type TreeNode } from "$lib/CollectionTree.svelte";
+  import ConsolePanel from "$lib/ConsolePanel.svelte";
   import CrashDialog, { type CrashInfo } from "$lib/CrashDialog.svelte";
   import ImportDialog, { type ImportPreviewDto } from "$lib/ImportDialog.svelte";
   import RequestErrorPanel from "$lib/RequestErrorPanel.svelte";
@@ -10,7 +11,7 @@
   import ThemeSwitcher, { type Theme } from "$lib/ThemeSwitcher.svelte";
   import Tour, { type TourStep } from "$lib/Tour.svelte";
   import UpdateDialog, { type UpdateInfo, type UpdateStage } from "$lib/UpdateDialog.svelte";
-  import type { RequestFailureDto, SendResponseResult } from "$lib/types";
+  import type { ConsoleEntryDto, RequestFailureDto, SendResponseResult } from "$lib/types";
 
   type EnvironmentSummary = {
     name: string;
@@ -37,6 +38,8 @@
     headers: Record<string, string>;
     auth: AuthPayloadDto;
     body: string | null;
+    script_pre_request: string | null;
+    script_post_response: string | null;
   };
 
   type CollectionSummary = {
@@ -69,6 +72,9 @@
     authApiKeyPlacement: string;
     authAccessToken: string;
     body: string;
+    scriptPreRequest: string;
+    scriptPostResponse: string;
+    console: ConsoleEntryDto[];
     sending: boolean;
     saving: boolean;
     error: string;
@@ -98,6 +104,9 @@
       authApiKeyPlacement: "header",
       authAccessToken: "",
       body: "",
+      scriptPreRequest: "",
+      scriptPostResponse: "",
+      console: [],
       sending: false,
       saving: false,
       error: "",
@@ -131,7 +140,7 @@
   type LayoutPreset = "split" | "stacked" | "focus";
   const LAYOUT_PRESETS: LayoutPreset[] = ["split", "stacked", "focus"];
 
-  type PanelVisibility = { headers: boolean; auth: boolean; body: boolean };
+  type PanelVisibility = { headers: boolean; auth: boolean; body: boolean; scripts: boolean; console: boolean };
   type SettingsDto = {
     theme: Theme;
     layout_preset: LayoutPreset;
@@ -144,7 +153,8 @@
 
   let theme = $state<Theme>("light");
   let layoutPreset = $state<LayoutPreset>("stacked");
-  let panels = $state<PanelVisibility>({ headers: true, auth: true, body: true });
+  let panels = $state<PanelVisibility>({ headers: true, auth: true, body: true, scripts: true, console: true });
+  let scriptSubTab = $state<"pre-request" | "post-response">("pre-request");
   let hasSeenTour = $state(false);
   let autoCheckUpdates = $state(false);
   let updateCheckUrl = $state("");
@@ -381,6 +391,8 @@
       authApiKeyPlacement: tab.authApiKeyPlacement,
       authAccessToken: tab.authAccessToken,
       body: tab.body,
+      scriptPreRequest: tab.scriptPreRequest,
+      scriptPostResponse: tab.scriptPostResponse,
     };
   }
 
@@ -615,6 +627,9 @@
         authApiKeyPlacement: summary.auth.placement ?? "header",
         authAccessToken: summary.auth.accessToken ?? "",
         body: summary.body ?? "",
+        scriptPreRequest: summary.script_pre_request ?? "",
+        scriptPostResponse: summary.script_post_response ?? "",
+        console: [],
         sending: false,
         saving: false,
         error: "",
@@ -642,6 +657,8 @@
         headers: parseHeaders(tab.headersText),
         auth: authPayload(tab),
         body: tab.body || null,
+        scriptPreRequest: tab.scriptPreRequest || null,
+        scriptPostResponse: tab.scriptPostResponse || null,
       });
       tab.savedSnapshot = snapshotOf(tab);
       tab.error = "";
@@ -658,6 +675,7 @@
     tab.error = "";
     tab.errorKind = "";
     tab.response = null;
+    tab.console = [];
     try {
       tab.response = await invoke<SendResponseResult>("send_request", {
         requestKey: requestKeyOf(tab),
@@ -667,15 +685,19 @@
         headers: parseHeaders(tab.headersText),
         body: tab.body || null,
         auth: authPayload(tab),
+        scriptPreRequest: tab.scriptPreRequest || null,
+        scriptPostResponse: tab.scriptPostResponse || null,
       });
+      tab.console = tab.response.console;
     } catch (e) {
-      // send_request rejects with a { kind, message } object (spec
-      // section 16's categorized failures) -- fall back to a plain
-      // string for anything else Tauri might reject with.
+      // send_request rejects with a { kind, message, console } object
+      // (spec section 16's categorized failures) -- fall back to a
+      // plain string for anything else Tauri might reject with.
       const failure = e as RequestFailureDto | string;
       if (typeof failure === "object" && failure && "kind" in failure) {
         tab.errorKind = failure.kind;
         tab.error = failure.message;
+        tab.console = failure.console ?? [];
       } else {
         tab.errorKind = "other";
         tab.error = String(e);
@@ -837,6 +859,8 @@
         <button type="button" class="chip" class:active={panels.headers} onclick={() => (panels.headers = !panels.headers)}>Headers</button>
         <button type="button" class="chip" class:active={panels.auth} onclick={() => (panels.auth = !panels.auth)}>Auth</button>
         <button type="button" class="chip" class:active={panels.body} onclick={() => (panels.body = !panels.body)}>Body</button>
+        <button type="button" class="chip" class:active={panels.scripts} onclick={() => (panels.scripts = !panels.scripts)}>Scripts</button>
+        <button type="button" class="chip" class:active={panels.console} onclick={() => (panels.console = !panels.console)}>Console</button>
       </div>
 
       <div class="content" class:split={layoutPreset === "split"}>
@@ -899,6 +923,38 @@
             </section>
           {/if}
 
+          {#if panels.scripts}
+            <section>
+              <div class="sub-tabs" role="tablist" aria-label="Scripts">
+                <button type="button" class:active={scriptSubTab === "pre-request"} onclick={() => (scriptSubTab = "pre-request")}>
+                  Pre-request
+                </button>
+                <button type="button" class:active={scriptSubTab === "post-response"} onclick={() => (scriptSubTab = "post-response")}>
+                  Post-response
+                </button>
+              </div>
+              {#if scriptSubTab === "pre-request"}
+                <label for="script-pre-request">Runs before the request is sent -- can read/set vars and modify the request (req.url, req.headers, req.body).</label>
+                <textarea id="script-pre-request" class="script" bind:value={tab.scriptPreRequest} rows="6" placeholder={'bru.setVar("request_time", Date.now());'}
+                ></textarea>
+              {:else}
+                <label for="script-post-response">Runs after the response comes back -- can read the response (res.status, res.headers, res.body) and set vars.</label>
+                <textarea id="script-post-response" class="script" bind:value={tab.scriptPostResponse} rows="6" placeholder={'if (res.status === 200) {\n  bru.setVar("last_id", res.body.id);\n}'}
+                ></textarea>
+              {/if}
+              <p class="hint">Vault secrets are never readable here -- a {"{{vault:...}}"} reference stays literal text until the engine resolves it at send time.</p>
+            </section>
+          {/if}
+
+          {#if panels.console}
+            <section>
+              <label for="console-panel">Console</label>
+              <div id="console-panel">
+                <ConsolePanel entries={tab.console} />
+              </div>
+            </section>
+          {/if}
+
           {#if tab.error && !tab.errorKind}
             <p class="error">{tab.error}</p>
           {/if}
@@ -907,6 +963,10 @@
         {#if tab.response}
           <div class="response-column">
             <ResponsePanel response={tab.response} requestKey={requestKeyOf(tab)} />
+          </div>
+        {:else if tab.error && tab.errorKind === "script"}
+          <div class="response-column">
+            <p class="script-error-hint">Pre-request script failed -- see the Console panel.</p>
           </div>
         {:else if tab.error && tab.errorKind}
           <div class="response-column">
@@ -1243,5 +1303,33 @@
 
   .error {
     color: var(--danger);
+  }
+
+  .sub-tabs {
+    display: flex;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .sub-tabs button {
+    background: transparent;
+    font-size: 0.85rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  .sub-tabs button.active {
+    background: var(--accent);
+    color: var(--accent-text);
+    border-color: var(--accent);
+  }
+
+  .script {
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 0.85rem;
+  }
+
+  .script-error-hint {
+    color: var(--danger);
+    font-size: 0.9rem;
   }
 </style>

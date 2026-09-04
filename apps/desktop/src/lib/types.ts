@@ -21,6 +21,13 @@ export type CookieDto = {
   same_site: string | null;
 };
 
+/// One `console.*` call from a pre-request or post-response script
+/// (spec section 9), in call order.
+export type ConsoleEntryDto = {
+  level: string;
+  message: string;
+};
+
 export type SendResponseResult = {
   status: number;
   status_text: string;
@@ -30,6 +37,7 @@ export type SendResponseResult = {
   elapsed_ms: number;
   resolved_url: string;
   history_id: number;
+  console: ConsoleEntryDto[];
 };
 
 export type HistoryEntrySummary = {
@@ -59,10 +67,11 @@ export type HistoryEntryDetail = {
 
 /// What a failed `send_request` call rejects with (spec section 16:
 /// "categorized, not a generic error badge") -- `kind` is one of
-/// "dns"/"timeout"/"tls"/"connection_refused"/"other"/"internal".
+/// "dns"/"timeout"/"tls"/"connection_refused"/"other"/"internal"/"script".
 export type RequestFailureDto = {
   kind: string;
   message: string;
+  console: ConsoleEntryDto[];
 };
 
 export type DiffStatus = "added" | "removed" | "changed" | "unchanged";

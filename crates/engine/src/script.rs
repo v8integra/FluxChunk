@@ -177,10 +177,27 @@ fn eval_script(ctx: &Ctx<'_>, source: &str) -> Result<(), EngineError> {
         Ok(()) => Ok(()),
         Err(rquickjs::Error::Exception) => {
             let exception = ctx.catch();
-            Err(EngineError::Script(stringify_js_value(ctx, &exception)))
+            Err(EngineError::Script(format_js_error(ctx, &exception)))
         }
         Err(e) => Err(EngineError::from(e)),
     }
+}
+
+/// `"<message>\n<stack>"` when the thrown value is an Error-like object
+/// with a non-empty `stack` -- QuickJS populates it with `file:line:col`
+/// frames for both thrown exceptions and syntax errors, which is what
+/// spec section 16's "Script errors: surfaced in Console panel with
+/// line numbers" needs; `stringify_js_value` alone only has `.message`.
+fn format_js_error<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> String {
+    let message = stringify_js_value(ctx, value);
+    if let Some(obj) = value.as_object() {
+        if let Ok(stack) = obj.get::<_, String>("stack") {
+            if !stack.trim().is_empty() {
+                return format!("{message}\n{}", stack.trim_end());
+            }
+        }
+    }
+    message
 }
 
 fn install_bru<'js>(ctx: &Ctx<'js>, vars: &Rc<RefCell<IndexMap<String, String>>>) -> Result<(), EngineError> {
@@ -485,6 +502,23 @@ mod tests {
             panic!("expected a Script error, got {result:?}");
         };
         assert!(message.contains("custom failure"), "message was: {message}");
+    }
+
+    #[test]
+    fn thrown_exception_message_includes_line_number() {
+        // Spec section 16: "Script errors: surfaced in Console panel
+        // with line numbers" -- the stack QuickJS attaches to thrown
+        // Errors carries `file:line:col`, appended after the message.
+        let result = run_pre_request(
+            "function boom() {\n  throw new Error(\"custom failure\");\n}\nboom();",
+            &IndexMap::new(),
+            &req("https://example.com"),
+            &ScriptLimits::default(),
+        );
+        let Err(EngineError::Script(message)) = result else {
+            panic!("expected a Script error, got {result:?}");
+        };
+        assert!(message.contains(":2:"), "expected a line-2 reference in: {message}");
     }
 
     #[test]

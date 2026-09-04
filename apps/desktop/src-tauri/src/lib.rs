@@ -14,6 +14,7 @@ use fluxchunk_engine::history::{self, HistoryEntrySummary, HistoryStore};
 use fluxchunk_engine::http::{HttpClient, Method, OutgoingBody, OutgoingRequest};
 use fluxchunk_engine::import;
 use fluxchunk_engine::response::{self, BodyPreview, Cookie};
+use fluxchunk_engine::script::{self, ConsoleLevel, ScriptLimits, ScriptRequest, ScriptResponse};
 use fluxchunk_engine::vars::{interpolate, merge_scopes, resolve_vault};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -296,6 +297,47 @@ impl AuthPayload {
     }
 }
 
+/// One `console.*` call from a pre-request or post-response script
+/// (spec section 9's `console.*` -> Console panel), in call order --
+/// pre-request's entries first, then post-response's.
+#[derive(Debug, Clone, Serialize)]
+struct ConsoleEntryDto {
+    level: String,
+    message: String,
+}
+
+fn map_console(entries: &[script::ConsoleEntry]) -> Vec<ConsoleEntryDto> {
+    entries
+        .iter()
+        .map(|e| ConsoleEntryDto {
+            level: match e.level {
+                ConsoleLevel::Log => "log",
+                ConsoleLevel::Info => "info",
+                ConsoleLevel::Warn => "warn",
+                ConsoleLevel::Error => "error",
+            }
+            .to_string(),
+            message: e.message.clone(),
+        })
+        .collect()
+}
+
+/// Merges script-set vars into the active environment's in-memory vars
+/// -- never written back to the `.apienv` file -- so a later send in the
+/// same session sees them via `{{var}}` (spec section 4's own example:
+/// a post-response script sets `last_user_id` for a later request to
+/// use). Only touches keys a script actually changed, so a collection-
+/// scoped var a script never mutated doesn't get silently promoted into
+/// environment scope.
+fn write_back_script_vars(environment: &Mutex<EnvironmentState>, vars: &IndexMap<String, String>) {
+    let mut env = environment.lock().unwrap();
+    for (k, v) in vars {
+        if env.vars.get(k) != Some(v) {
+            env.vars.insert(k.clone(), v.clone());
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct SendResponseResult {
     status: u16,
@@ -316,6 +358,11 @@ struct SendResponseResult {
     /// time this returns, so "compare against a past run" is just
     /// diffing two history ids (see `diff_history`), this one included.
     history_id: i64,
+    /// Combined `console.*` output from both script phases. A
+    /// post-response script *error* also lands here as one more "error"
+    /// entry rather than failing the whole call -- the response already
+    /// succeeded and matters more than the test script that ran after it.
+    console: Vec<ConsoleEntryDto>,
 }
 
 /// A failed `send_request` call, categorized (spec section 16: "DNS
@@ -325,29 +372,35 @@ struct SendResponseResult {
 #[derive(Debug, Serialize)]
 struct RequestFailure {
     /// One of the `RequestErrorKind` labels ("dns"/"timeout"/"tls"/
-    /// "connection_refused"/"other"), or "internal" for a failure before
-    /// the request was even attempted (bad method, local history-store
-    /// error, etc.) -- never network-related, so never worth the same
-    /// DNS/TLS/etc. framing in the UI.
+    /// "connection_refused"/"other"), "script" for a pre-request script
+    /// that threw (spec section 16: surfaced in the Console panel, with
+    /// line numbers, not the same DNS/TLS-style card), or "internal" for
+    /// anything else before/after the network call (bad method, local
+    /// history-store error).
     kind: String,
     message: String,
+    /// Whatever console output happened before the failure -- e.g. a
+    /// pre-request script that logged something and then threw.
+    console: Vec<ConsoleEntryDto>,
 }
 
 impl RequestFailure {
-    fn internal(message: impl Into<String>) -> Self {
+    fn internal(message: impl Into<String>, console: Vec<ConsoleEntryDto>) -> Self {
         let message = message.into();
         logging::error(format!("send_request failed before/after the network call: {message}"));
-        RequestFailure { kind: "internal".to_string(), message }
+        RequestFailure { kind: "internal".to_string(), message, console }
     }
 }
 
 /// Sends a single request, resolving `{{var}}` / `{{vault:...}}`
 /// references against the currently loaded environment and collection
 /// (if any) first, and resolving `auth { mode: inherit }` against the
-/// collection's auth. Records the result to response history under
-/// `request_key` (the caller's choice -- the frontend uses a saved
-/// request's file path, or a stable per-tab id for ad-hoc ones) before
-/// returning.
+/// collection's auth. Runs the pre-request script (if any) before
+/// building the outgoing request and the post-response script (if any)
+/// after it comes back -- same order as `apicli`'s send path. Records
+/// the result to response history under `request_key` (the caller's
+/// choice -- the frontend uses a saved request's file path, or a stable
+/// per-tab id for ad-hoc ones) before returning.
 #[tauri::command]
 async fn send_request(
     state: tauri::State<'_, AppState>,
@@ -358,6 +411,8 @@ async fn send_request(
     headers: HashMap<String, String>,
     body: Option<String>,
     auth: AuthPayload,
+    script_pre_request: Option<String>,
+    script_post_response: Option<String>,
 ) -> Result<SendResponseResult, RequestFailure> {
     crash::set_context("sending request");
 
@@ -369,19 +424,47 @@ async fn send_request(
         let col = state.collection.lock().unwrap();
         (col.vars.clone(), col.auth.clone())
     };
-    let vars = merge_scopes(&[&collection_vars, &env_vars]);
+    let mut vars = merge_scopes(&[&collection_vars, &env_vars]);
 
-    let method_parsed = Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|e| RequestFailure::internal(e.to_string()))?;
+    let method_parsed =
+        Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|e| RequestFailure::internal(e.to_string(), Vec::new()))?;
 
-    let visible_url = interpolate(&url, &vars);
-    let visible_headers: IndexMap<String, String> =
+    let mut visible_url = interpolate(&url, &vars);
+    let mut visible_headers: IndexMap<String, String> =
         headers.iter().map(|(k, v)| (k.clone(), interpolate(v, &vars))).collect();
+    let mut visible_body = body.as_deref().map(|b| interpolate(b, &vars));
+
+    let mut console_entries: Vec<ConsoleEntryDto> = Vec::new();
+
+    if let Some(script_source) = script_pre_request.as_deref().filter(|s| !s.trim().is_empty()) {
+        let script_req = ScriptRequest {
+            method: method.to_uppercase(),
+            url: visible_url.clone(),
+            headers: visible_headers.clone(),
+            body: visible_body.clone(),
+        };
+        match script::run_pre_request(script_source, &vars, &script_req, &ScriptLimits::default()) {
+            Ok(outcome) => {
+                console_entries.extend(map_console(&outcome.console));
+                vars = outcome.vars;
+                visible_url = outcome.request.url;
+                visible_headers = outcome.request.headers;
+                visible_body = outcome.request.body;
+                write_back_script_vars(&state.environment, &vars);
+            }
+            Err(e) => {
+                let message = e.to_string();
+                logging::warn(format!("pre-request script failed: {message}"));
+                console_entries.push(ConsoleEntryDto { level: "error".to_string(), message: message.clone() });
+                return Err(RequestFailure { kind: "script".to_string(), message, console: console_entries });
+            }
+        }
+    }
 
     let send_url = resolve_vault(&visible_url, &vault);
     let send_headers: IndexMap<String, String> =
         visible_headers.iter().map(|(k, v)| (k.clone(), resolve_vault(v, &vault))).collect();
     let resolved_auth = resolve_inherited_auth(&auth.into_auth(), &collection_auth).resolve(&vars, &vault);
-    let visible_body = body.as_deref().map(|b| interpolate(b, &vars));
     let resolved_body = visible_body.as_deref().map(|b| resolve_vault(b, &vault));
 
     // Verbose logging (spec section 16) only ever sees the *visible*
@@ -407,9 +490,9 @@ async fn send_request(
         Err(EngineError::Request(e)) => {
             let (kind, message) = categorize_request_error(&e);
             logging::log_request_failed(&method, &send_url, kind.label(), &message);
-            return Err(RequestFailure { kind: kind.label().to_string(), message });
+            return Err(RequestFailure { kind: kind.label().to_string(), message, console: console_entries });
         }
-        Err(other) => return Err(RequestFailure::internal(other.to_string())),
+        Err(other) => return Err(RequestFailure::internal(other.to_string(), console_entries)),
     };
 
     let status = resp.status.as_u16();
@@ -422,6 +505,26 @@ async fn send_request(
     let cookies = response::parse_set_cookie_headers(&resp.set_cookie_headers);
     let headers_json = serde_json::to_string(&resp.headers).unwrap_or_else(|_| "{}".to_string());
     let cookies_json = serde_json::to_string(&resp.set_cookie_headers).unwrap_or_else(|_| "[]".to_string());
+
+    if let Some(script_source) = script_post_response.as_deref().filter(|s| !s.trim().is_empty()) {
+        let script_res = ScriptResponse {
+            status,
+            headers: resp.headers.clone(),
+            body: resp.body_as_text(),
+        };
+        match script::run_post_response(script_source, &vars, &script_res, &ScriptLimits::default()) {
+            Ok(outcome) => {
+                console_entries.extend(map_console(&outcome.console));
+                vars = outcome.vars;
+                write_back_script_vars(&state.environment, &vars);
+            }
+            Err(e) => {
+                let message = e.to_string();
+                logging::warn(format!("post-response script failed: {message}"));
+                console_entries.push(ConsoleEntryDto { level: "error".to_string(), message });
+            }
+        }
+    }
 
     // History storage happens here, on the actual response bytes, *before*
     // they're gated by the size threshold above -- the gate only affects
@@ -445,7 +548,7 @@ async fn send_request(
             },
             DEFAULT_HISTORY_RETENTION,
         )
-        .map_err(|e| RequestFailure::internal(e.to_string()))?;
+        .map_err(|e| RequestFailure::internal(e.to_string(), console_entries.clone()))?;
 
     Ok(SendResponseResult {
         status,
@@ -456,6 +559,7 @@ async fn send_request(
         elapsed_ms: resp.elapsed_ms,
         resolved_url: visible_url,
         history_id,
+        console: console_entries,
     })
 }
 
@@ -754,6 +858,8 @@ struct RequestSummary {
     headers: HashMap<String, String>,
     auth: AuthPayload,
     body: Option<String>,
+    script_pre_request: Option<String>,
+    script_post_response: Option<String>,
 }
 
 /// Parses a `.apireq` file for opening in a tab. Everything comes back
@@ -773,13 +879,15 @@ fn read_request(path: String) -> Result<RequestSummary, String> {
         headers: file.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         auth: AuthPayload::from_auth(&file.auth),
         body: file.body.as_ref().map(|b| b.content().to_string()),
+        script_pre_request: file.script_pre_request.clone(),
+        script_post_response: file.script_post_response.clone(),
     })
 }
 
-/// Writes the tab's edited method/url/headers/auth/body back into the
-/// original `.apireq` file. Re-reads that file fresh first and only
-/// overwrites those fields, so anything the UI doesn't (yet) expose --
-/// meta, params, scripts, asserts, unrecognized blocks -- survives
+/// Writes the tab's edited method/url/headers/auth/body/scripts back
+/// into the original `.apireq` file. Re-reads that file fresh first and
+/// only overwrites those fields, so anything the UI doesn't (yet)
+/// expose -- meta, params, asserts, unrecognized blocks -- survives
 /// untouched rather than being silently dropped.
 #[tauri::command]
 fn save_request(
@@ -789,6 +897,8 @@ fn save_request(
     headers: HashMap<String, String>,
     auth: AuthPayload,
     body: Option<String>,
+    script_pre_request: Option<String>,
+    script_post_response: Option<String>,
 ) -> Result<(), String> {
     let path = PathBuf::from(path);
     let source = std::fs::read_to_string(&path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
@@ -808,6 +918,8 @@ fn save_request(
         }),
         None => None,
     };
+    file.script_pre_request = script_pre_request.filter(|s| !s.is_empty());
+    file.script_post_response = script_post_response.filter(|s| !s.is_empty());
 
     std::fs::write(&path, file.to_string_pretty()).map_err(|e| format!("couldn't write {}: {e}", path.display()))
 }

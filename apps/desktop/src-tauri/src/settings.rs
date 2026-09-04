@@ -17,11 +17,21 @@ pub struct PanelVisibility {
     pub headers: bool,
     pub auth: bool,
     pub body: bool,
+    /// Spec section 10's "Scripts (Pre-request/Post-response/Tests
+    /// sub-tabs)" -- only the Pre-request/Post-response sub-tabs exist;
+    /// Tests would back the declarative `assert` block, which has no
+    /// evaluation engine yet.
+    pub scripts: bool,
+    /// Spec section 10 lists Console among the independently
+    /// show/hide-able panels, separate from Scripts -- accumulated
+    /// `console.*` output from the last send's pre-request/post-response
+    /// scripts.
+    pub console: bool,
 }
 
 impl Default for PanelVisibility {
     fn default() -> Self {
-        PanelVisibility { headers: true, auth: true, body: true }
+        PanelVisibility { headers: true, auth: true, body: true, scripts: true, console: true }
     }
 }
 
@@ -112,6 +122,8 @@ mod tests {
         assert_eq!(loaded.theme, "silver");
         assert_eq!(loaded.layout_preset, "split");
         assert!(!loaded.panels.body);
+        assert!(loaded.panels.scripts);
+        assert!(loaded.panels.console);
         assert!(loaded.panels.headers);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -163,6 +175,21 @@ mod tests {
         settings.verbose_logging = true;
         save(&path, &settings).unwrap();
         assert!(load(&path).unwrap().verbose_logging);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn panels_table_from_before_scripts_console_existed_still_loads() {
+        let dir = std::env::temp_dir().join(format!("fluxchunk-settings-test-panels-upgrade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "theme = \"dark\"\n\n[panels]\nheaders = true\nauth = true\nbody = false\n").unwrap();
+
+        let loaded = load(&path).unwrap();
+        assert!(!loaded.panels.body);
+        assert!(loaded.panels.scripts); // missing key -> default, not an error
+        assert!(loaded.panels.console);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
