@@ -2,13 +2,15 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import CollectionTree, { type TreeNode } from "$lib/CollectionTree.svelte";
+  import CrashDialog, { type CrashInfo } from "$lib/CrashDialog.svelte";
   import ImportDialog, { type ImportPreviewDto } from "$lib/ImportDialog.svelte";
+  import RequestErrorPanel from "$lib/RequestErrorPanel.svelte";
   import ResponsePanel from "$lib/ResponsePanel.svelte";
   import SettingsPanel from "$lib/SettingsPanel.svelte";
   import ThemeSwitcher, { type Theme } from "$lib/ThemeSwitcher.svelte";
   import Tour, { type TourStep } from "$lib/Tour.svelte";
   import UpdateDialog, { type UpdateInfo, type UpdateStage } from "$lib/UpdateDialog.svelte";
-  import type { SendResponseResult } from "$lib/types";
+  import type { RequestFailureDto, SendResponseResult } from "$lib/types";
 
   type EnvironmentSummary = {
     name: string;
@@ -70,6 +72,7 @@
     sending: boolean;
     saving: boolean;
     error: string;
+    errorKind: string;
     response: SendResponseResult | null;
     savedSnapshot: string;
   };
@@ -98,6 +101,7 @@
       sending: false,
       saving: false,
       error: "",
+      errorKind: "",
       response: null,
       savedSnapshot: "",
     };
@@ -135,6 +139,7 @@
     has_seen_tour: boolean;
     auto_check_updates: boolean;
     update_check_url: string;
+    verbose_logging: boolean;
   };
 
   let theme = $state<Theme>("light");
@@ -143,6 +148,7 @@
   let hasSeenTour = $state(false);
   let autoCheckUpdates = $state(false);
   let updateCheckUrl = $state("");
+  let verboseLogging = $state(false);
   let settingsLoaded = $state(false);
 
   $effect(() => {
@@ -159,6 +165,7 @@
     void hasSeenTour;
     void autoCheckUpdates;
     void updateCheckUrl;
+    void verboseLogging;
     if (!settingsLoaded) return; // don't clobber the saved file with defaults before the initial load lands
     invoke("save_settings", {
       settings: {
@@ -168,6 +175,7 @@
         has_seen_tour: hasSeenTour,
         auto_check_updates: autoCheckUpdates,
         update_check_url: updateCheckUrl,
+        verbose_logging: verboseLogging,
       },
     }).catch((e) => console.error(e));
   });
@@ -181,6 +189,7 @@
       hasSeenTour = s.has_seen_tour;
       autoCheckUpdates = s.auto_check_updates;
       updateCheckUrl = s.update_check_url;
+      verboseLogging = s.verbose_logging;
       // Spec section 12: "Auto-launches on first install" -- and only
       // then; the persistent "Take the tour" control below covers anyone
       // who wants it again later.
@@ -263,6 +272,32 @@
   function onSettingsChange(auto: boolean, url: string) {
     autoCheckUpdates = auto;
     updateCheckUrl = url;
+  }
+
+  function onVerboseLoggingChange(verbose: boolean) {
+    verboseLogging = verbose;
+  }
+
+  // --- crash reporting (spec section 16) ---
+
+  let pendingCrash = $state<CrashInfo | null>(null);
+
+  async function checkPendingCrash() {
+    try {
+      pendingCrash = await invoke<CrashInfo | null>("check_pending_crash");
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  checkPendingCrash();
+
+  function loadCrashDetails(): Promise<string> {
+    if (!pendingCrash) return Promise.reject("no crash report");
+    return invoke<string>("read_crash_report", { path: pendingCrash.path });
+  }
+
+  function dismissCrashDialog() {
+    pendingCrash = null;
   }
 
   // --- first-run tour (spec section 12) ---
@@ -583,6 +618,7 @@
         sending: false,
         saving: false,
         error: "",
+        errorKind: "",
         response: null,
         savedSnapshot: "",
       };
@@ -597,6 +633,7 @@
   async function saveTab(tab: Tab) {
     if (!tab.filePath) return;
     tab.saving = true;
+    tab.errorKind = "";
     try {
       await invoke("save_request", {
         path: tab.filePath,
@@ -619,6 +656,7 @@
     event.preventDefault();
     tab.sending = true;
     tab.error = "";
+    tab.errorKind = "";
     tab.response = null;
     try {
       tab.response = await invoke<SendResponseResult>("send_request", {
@@ -631,7 +669,17 @@
         auth: authPayload(tab),
       });
     } catch (e) {
-      tab.error = String(e);
+      // send_request rejects with a { kind, message } object (spec
+      // section 16's categorized failures) -- fall back to a plain
+      // string for anything else Tauri might reject with.
+      const failure = e as RequestFailureDto | string;
+      if (typeof failure === "object" && failure && "kind" in failure) {
+        tab.errorKind = failure.kind;
+        tab.error = failure.message;
+      } else {
+        tab.errorKind = "other";
+        tab.error = String(e);
+      }
     } finally {
       tab.sending = false;
     }
@@ -851,7 +899,7 @@
             </section>
           {/if}
 
-          {#if tab.error}
+          {#if tab.error && !tab.errorKind}
             <p class="error">{tab.error}</p>
           {/if}
         </div>
@@ -859,6 +907,10 @@
         {#if tab.response}
           <div class="response-column">
             <ResponsePanel response={tab.response} requestKey={requestKeyOf(tab)} />
+          </div>
+        {:else if tab.error && tab.errorKind}
+          <div class="response-column">
+            <RequestErrorPanel kind={tab.errorKind} message={tab.error} />
           </div>
         {/if}
       </div>
@@ -885,10 +937,16 @@
   <SettingsPanel
     {autoCheckUpdates}
     {updateCheckUrl}
+    {verboseLogging}
     onChange={onSettingsChange}
+    {onVerboseLoggingChange}
     onClose={() => (showSettingsPanel = false)}
     onCheckNow={() => checkForUpdates(false)}
   />
+{/if}
+
+{#if pendingCrash}
+  <CrashDialog crash={pendingCrash} onLoadDetails={loadCrashDetails} onDismiss={dismissCrashDialog} />
 {/if}
 
 <style>

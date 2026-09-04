@@ -57,6 +57,14 @@ export type HistoryEntryDetail = {
   sent_at: number;
 };
 
+/// What a failed `send_request` call rejects with (spec section 16:
+/// "categorized, not a generic error badge") -- `kind` is one of
+/// "dns"/"timeout"/"tls"/"connection_refused"/"other"/"internal".
+export type RequestFailureDto = {
+  kind: string;
+  message: string;
+};
+
 export type DiffStatus = "added" | "removed" | "changed" | "unchanged";
 
 export type DiffNode = {

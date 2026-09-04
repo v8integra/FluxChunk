@@ -9,19 +9,24 @@
   let {
     autoCheckUpdates,
     updateCheckUrl,
+    verboseLogging,
     onChange,
+    onVerboseLoggingChange,
     onClose,
     onCheckNow,
   }: {
     autoCheckUpdates: boolean;
     updateCheckUrl: string;
+    verboseLogging: boolean;
     onChange: (autoCheckUpdates: boolean, updateCheckUrl: string) => void;
+    onVerboseLoggingChange: (verboseLogging: boolean) => void;
     onClose: () => void;
     onCheckNow: () => void;
   } = $props();
 
   let localAuto = $state(autoCheckUpdates);
   let localUrl = $state(updateCheckUrl);
+  let localVerbose = $state(verboseLogging);
 
   function toggleAuto() {
     localAuto = !localAuto;
@@ -30,6 +35,20 @@
 
   function commitUrl() {
     onChange(localAuto, localUrl);
+  }
+
+  // Spec section 16: "Explicit 'Verbose logging' toggle for bodies, with
+  // a one-time warning before enabling." Turning it off never needs a
+  // warning -- only the transition into logging bodies does.
+  function toggleVerbose() {
+    if (!localVerbose) {
+      const confirmed = confirm(
+        "Verbose logging writes full request/response bodies to the local log file (still never vault secrets). Enable it?",
+      );
+      if (!confirmed) return;
+    }
+    localVerbose = !localVerbose;
+    onVerboseLoggingChange(localVerbose);
   }
 </script>
 
@@ -53,6 +72,18 @@
       <p class="hint">Point this at an internally hosted manifest instead of the public GitHub feed -- useful for an air-gapped or IT-managed install.</p>
 
       <button type="button" onclick={onCheckNow}>Check for Updates now</button>
+    </section>
+
+    <section>
+      <h3>Logging</h3>
+      <label class="checkbox-row">
+        <input type="checkbox" checked={localVerbose} onchange={toggleVerbose} />
+        Verbose logging (include request/response bodies)
+      </label>
+      <p class="hint">
+        Off by default -- normal logs only ever record method/host/status/timing. Vault secrets are never logged, even with this on.
+        Logs live locally under FluxChunk's app data folder and are purged after 7 days or 50MB, whichever comes first.
+      </p>
     </section>
   </div>
 </div>

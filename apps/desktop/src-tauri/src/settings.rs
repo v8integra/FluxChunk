@@ -45,6 +45,12 @@ pub struct Settings {
     /// feed); non-empty overrides it, e.g. for an internally hosted
     /// manifest, air-gapped from the public internet.
     pub update_check_url: String,
+    /// Spec section 16: off by default -- normal logging only ever
+    /// records method/host/status/timing, never headers or bodies. This
+    /// unlocks logging (redacted, pre-vault-resolution) request/response
+    /// bodies too, which is why the frontend gates turning it on behind
+    /// a one-time warning.
+    pub verbose_logging: bool,
 }
 
 impl Default for Settings {
@@ -56,6 +62,7 @@ impl Default for Settings {
             has_seen_tour: false,
             auto_check_updates: false,
             update_check_url: String::new(),
+            verbose_logging: false,
         }
     }
 }
@@ -141,6 +148,21 @@ mod tests {
         let loaded = load(&path).unwrap();
         assert!(loaded.auto_check_updates);
         assert_eq!(loaded.update_check_url, "https://updates.internal.example/latest.json");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verbose_logging_defaults_off_and_round_trips_true() {
+        let dir = std::env::temp_dir().join(format!("fluxchunk-settings-test-verbose-{}", std::process::id()));
+        let path = dir.join("config.toml");
+
+        assert!(!Settings::default().verbose_logging);
+
+        let mut settings = Settings::default();
+        settings.verbose_logging = true;
+        save(&path, &settings).unwrap();
+        assert!(load(&path).unwrap().verbose_logging);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

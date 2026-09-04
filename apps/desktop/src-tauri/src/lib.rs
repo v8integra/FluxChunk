@@ -1,3 +1,5 @@
+mod crash;
+mod logging;
 mod settings;
 
 use std::collections::HashMap;
@@ -6,6 +8,7 @@ use std::sync::Mutex;
 
 use fluxchunk_engine::collection::{self, resolve_inherited_auth, CollectionItem};
 use fluxchunk_engine::diff::{self, DiffNode};
+use fluxchunk_engine::error::{categorize_request_error, EngineError};
 use fluxchunk_engine::format::{ApiKeyPlacement, ApiRequestFile, Auth, Body, EnvironmentFile, OAuth2Config, VaultFile};
 use fluxchunk_engine::history::{self, HistoryEntrySummary, HistoryStore};
 use fluxchunk_engine::http::{HttpClient, Method, OutgoingBody, OutgoingRequest};
@@ -46,6 +49,10 @@ struct AppState {
     collection: Mutex<CollectionState>,
     history: HistoryStore,
     settings_path: PathBuf,
+    /// Where the panic hook writes redacted crash reports (spec section
+    /// 16) -- `check_pending_crash`/`read_crash_report` both read from
+    /// here, and `read_crash_report` refuses any path outside it.
+    crash_dir: PathBuf,
     /// The `Update` handle from the most recent `check_for_updates` call,
     /// if one found something newer -- `download_update` and
     /// `install_and_restart` operate on it. `tokio::sync::Mutex` (not
@@ -65,7 +72,30 @@ fn load_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
 
 #[tauri::command]
 fn save_settings(state: tauri::State<AppState>, settings: Settings) -> Result<(), String> {
+    logging::set_verbose(settings.verbose_logging);
     settings::save(&state.settings_path, &settings)
+}
+
+/// Called once at launch (spec section 16, "next launch: calm 'app
+/// closed unexpectedly' notice"). Returns `None` on an ordinary launch;
+/// reading this clears the pending marker, so it only ever fires once
+/// per crash, not on every subsequent launch.
+#[tauri::command]
+fn check_pending_crash(state: tauri::State<AppState>) -> Option<crash::CrashInfo> {
+    crash::take_pending_crash(&state.crash_dir)
+}
+
+/// Backs "View details" on the crash notice. Refuses anything outside
+/// our own crash directory -- the path always originates from our own
+/// `check_pending_crash` response, but there's no reason to accept an
+/// arbitrary-file-read path from the frontend regardless.
+#[tauri::command]
+fn read_crash_report(state: tauri::State<AppState>, path: String) -> Result<String, String> {
+    let requested = PathBuf::from(&path);
+    if requested.parent() != Some(state.crash_dir.as_path()) {
+        return Err("refused: not a crash report path".to_string());
+    }
+    crash::read_report(&requested)
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +141,7 @@ async fn check_for_updates(app: tauri::AppHandle, state: tauri::State<'_, AppSta
 /// found, but doesn't install it yet.
 #[tauri::command]
 async fn download_update(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    crash::set_context("downloading update");
     let guard = state.pending_update.lock().await;
     let Some(update) = guard.as_ref() else {
         return Err("no update to download -- check for updates first".to_string());
@@ -126,6 +157,7 @@ async fn download_update(state: tauri::State<'_, AppState>) -> Result<(), String
 /// have completed first; won't silently re-download.
 #[tauri::command]
 async fn install_and_restart(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    crash::set_context("installing update");
     let update_guard = state.pending_update.lock().await;
     let Some(update) = update_guard.as_ref() else {
         return Err("no pending update -- check for updates first".to_string());
@@ -150,6 +182,7 @@ struct EnvironmentSummary {
 /// secrets never cross the IPC boundary.
 #[tauri::command]
 fn load_environment(state: tauri::State<AppState>, path: String) -> Result<EnvironmentSummary, String> {
+    crash::set_context("loading environment");
     let path = PathBuf::from(path);
     let source = std::fs::read_to_string(&path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
     let env = EnvironmentFile::parse(&source).map_err(|e| e.to_string())?;
@@ -285,6 +318,29 @@ struct SendResponseResult {
     history_id: i64,
 }
 
+/// A failed `send_request` call, categorized (spec section 16: "DNS
+/// failure, timeout, TLS error, etc. -- categorized, not a generic error
+/// badge") rather than a flat error string, so the frontend can show an
+/// explanation specific to what actually went wrong.
+#[derive(Debug, Serialize)]
+struct RequestFailure {
+    /// One of the `RequestErrorKind` labels ("dns"/"timeout"/"tls"/
+    /// "connection_refused"/"other"), or "internal" for a failure before
+    /// the request was even attempted (bad method, local history-store
+    /// error, etc.) -- never network-related, so never worth the same
+    /// DNS/TLS/etc. framing in the UI.
+    kind: String,
+    message: String,
+}
+
+impl RequestFailure {
+    fn internal(message: impl Into<String>) -> Self {
+        let message = message.into();
+        logging::error(format!("send_request failed before/after the network call: {message}"));
+        RequestFailure { kind: "internal".to_string(), message }
+    }
+}
+
 /// Sends a single request, resolving `{{var}}` / `{{vault:...}}`
 /// references against the currently loaded environment and collection
 /// (if any) first, and resolving `auth { mode: inherit }` against the
@@ -302,7 +358,9 @@ async fn send_request(
     headers: HashMap<String, String>,
     body: Option<String>,
     auth: AuthPayload,
-) -> Result<SendResponseResult, String> {
+) -> Result<SendResponseResult, RequestFailure> {
+    crash::set_context("sending request");
+
     let (env_vars, vault) = {
         let env = state.environment.lock().unwrap();
         (env.vars.clone(), env.vault.clone())
@@ -313,7 +371,7 @@ async fn send_request(
     };
     let vars = merge_scopes(&[&collection_vars, &env_vars]);
 
-    let method_parsed = Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|e| e.to_string())?;
+    let method_parsed = Method::from_bytes(method.to_uppercase().as_bytes()).map_err(|e| RequestFailure::internal(e.to_string()))?;
 
     let visible_url = interpolate(&url, &vars);
     let visible_headers: IndexMap<String, String> =
@@ -323,7 +381,17 @@ async fn send_request(
     let send_headers: IndexMap<String, String> =
         visible_headers.iter().map(|(k, v)| (k.clone(), resolve_vault(v, &vault))).collect();
     let resolved_auth = resolve_inherited_auth(&auth.into_auth(), &collection_auth).resolve(&vars, &vault);
-    let resolved_body = body.map(|b| resolve_vault(&interpolate(&b, &vars), &vault));
+    let visible_body = body.as_deref().map(|b| interpolate(b, &vars));
+    let resolved_body = visible_body.as_deref().map(|b| resolve_vault(b, &vault));
+
+    // Verbose logging (spec section 16) only ever sees the *visible*
+    // headers/body -- interpolated but with `{{vault:...}}` still
+    // unresolved, exactly what's already shown in the UI -- never the
+    // fully-resolved wire content the vault produced.
+    if logging::is_verbose() {
+        let visible_headers_str = visible_headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ");
+        logging::log_verbose_request(&visible_headers_str, visible_body.as_deref());
+    }
 
     let outgoing = OutgoingRequest {
         method: method_parsed,
@@ -334,11 +402,21 @@ async fn send_request(
     };
 
     let client = HttpClient::new();
-    let resp = client.send(outgoing).await.map_err(|e| e.to_string())?;
+    let resp = match client.send(outgoing).await {
+        Ok(resp) => resp,
+        Err(EngineError::Request(e)) => {
+            let (kind, message) = categorize_request_error(&e);
+            logging::log_request_failed(&method, &send_url, kind.label(), &message);
+            return Err(RequestFailure { kind: kind.label().to_string(), message });
+        }
+        Err(other) => return Err(RequestFailure::internal(other.to_string())),
+    };
 
     let status = resp.status.as_u16();
     let status_text = resp.status.canonical_reason().unwrap_or("").to_string();
     let content_type = resp.headers.get("content-type").cloned();
+
+    logging::log_request_sent(&method, &send_url, status, resp.elapsed_ms);
 
     let body_preview = response::classify_and_preview(content_type.as_deref(), &resp.body, false);
     let cookies = response::parse_set_cookie_headers(&resp.set_cookie_headers);
@@ -367,7 +445,7 @@ async fn send_request(
             },
             DEFAULT_HISTORY_RETENTION,
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| RequestFailure::internal(e.to_string()))?;
 
     Ok(SendResponseResult {
         status,
@@ -501,6 +579,7 @@ struct CollectionSummary {
 /// `send_request` calls (`auth { mode: inherit }` resolves against this).
 #[tauri::command]
 fn open_collection(state: tauri::State<AppState>, path: String) -> Result<CollectionSummary, String> {
+    crash::set_context("opening collection");
     let root = PathBuf::from(path);
     let tree = collection::discover(&root).map_err(|e| e.to_string())?;
 
@@ -653,6 +732,7 @@ fn preview_openapi_import(source_path: String) -> Result<ImportPreview, String> 
 /// calls this.
 #[tauri::command]
 fn commit_postman_import(source_path: String, parent_dir: String, skip_flagged: bool) -> Result<ImportSummary, String> {
+    crash::set_context("importing collection");
     let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
     let imported = import::postman::import_postman_collection(&json).map_err(|e| e.to_string())?;
     commit_import(imported, &parent_dir, skip_flagged)
@@ -660,6 +740,7 @@ fn commit_postman_import(source_path: String, parent_dir: String, skip_flagged: 
 
 #[tauri::command]
 fn commit_openapi_import(source_path: String, parent_dir: String, skip_flagged: bool) -> Result<ImportSummary, String> {
+    crash::set_context("importing collection");
     let json = std::fs::read_to_string(&source_path).map_err(|e| format!("couldn't read {source_path}: {e}"))?;
     let imported = import::openapi::import_openapi_spec(&json).map_err(|e| e.to_string())?;
     commit_import(imported, &parent_dir, skip_flagged)
@@ -748,12 +829,23 @@ pub fn run() {
     builder
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
+            let settings_path = app_data_dir.join("config.toml");
+
+            // Logging and the crash-report panic hook both need to be up
+            // before anything else runs -- a panic during, say, opening
+            // the history store should still produce a report.
+            logging::init(&app_data_dir.join("logs"))?;
+            logging::set_verbose(settings::load(&settings_path)?.verbose_logging);
+            let crash_dir = app_data_dir.join("crashes");
+            crash::install_panic_hook(crash_dir.clone());
+
             let history = HistoryStore::open(&app_data_dir.join("history.sqlite3"))?;
             app.manage(AppState {
                 environment: Mutex::new(EnvironmentState::default()),
                 collection: Mutex::new(CollectionState::default()),
                 history,
-                settings_path: app_data_dir.join("config.toml"),
+                settings_path,
+                crash_dir,
                 pending_update: tokio::sync::Mutex::new(None),
                 pending_update_bytes: tokio::sync::Mutex::new(None),
             });
@@ -780,7 +872,9 @@ pub fn run() {
             save_settings,
             check_for_updates,
             download_update,
-            install_and_restart
+            install_and_restart,
+            check_pending_crash,
+            read_crash_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
