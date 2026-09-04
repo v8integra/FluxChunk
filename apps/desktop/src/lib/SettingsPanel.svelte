@@ -10,16 +10,22 @@
     autoCheckUpdates,
     updateCheckUrl,
     verboseLogging,
+    publicKey,
+    displayName,
     onChange,
     onVerboseLoggingChange,
+    onDisplayNameChange,
     onClose,
     onCheckNow,
   }: {
     autoCheckUpdates: boolean;
     updateCheckUrl: string;
     verboseLogging: boolean;
+    publicKey: string;
+    displayName: string;
     onChange: (autoCheckUpdates: boolean, updateCheckUrl: string) => void;
     onVerboseLoggingChange: (verboseLogging: boolean) => void;
+    onDisplayNameChange: (displayName: string) => void;
     onClose: () => void;
     onCheckNow: () => void;
   } = $props();
@@ -27,6 +33,18 @@
   let localAuto = $state(autoCheckUpdates);
   let localUrl = $state(updateCheckUrl);
   let localVerbose = $state(verboseLogging);
+  let localDisplayName = $state(displayName);
+  let copied = $state(false);
+
+  function commitDisplayName() {
+    if (localDisplayName !== displayName) onDisplayNameChange(localDisplayName);
+  }
+
+  async function copyPublicKey() {
+    await navigator.clipboard.writeText(publicKey);
+    copied = true;
+    setTimeout(() => (copied = false), 2000);
+  }
 
   function toggleAuto() {
     localAuto = !localAuto;
@@ -84,6 +102,20 @@
         Off by default -- normal logs only ever record method/host/status/timing. Vault secrets are never logged, even with this on.
         Logs live locally under FluxChunk's app data folder and are purged after 7 days or 50MB, whichever comes first.
       </p>
+    </section>
+
+    <section>
+      <h3>Identity</h3>
+      <p class="hint">Generated once for this install -- no account. Share your public key with a teammate so they can add you as an .apiworkspace approver.</p>
+
+      <label for="display-name">Display name</label>
+      <input id="display-name" type="text" bind:value={localDisplayName} onblur={commitDisplayName} />
+
+      <label for="public-key">Public key</label>
+      <div class="key-row">
+        <input id="public-key" type="text" readonly value={publicKey} onclick={(e) => e.currentTarget.select()} />
+        <button type="button" onclick={copyPublicKey}>{copied ? "Copied!" : "Copy"}</button>
+      </div>
     </section>
   </div>
 </div>
@@ -164,5 +196,23 @@
 
   button {
     margin-top: 0.9rem;
+  }
+
+  .key-row {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    margin-top: 0.25rem;
+  }
+
+  .key-row input {
+    flex: 1;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    font-size: 0.78rem;
+  }
+
+  .key-row button {
+    margin-top: 0;
+    flex-shrink: 0;
   }
 </style>

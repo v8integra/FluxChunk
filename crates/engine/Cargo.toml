@@ -16,6 +16,9 @@ rquickjs = "0.12"
 rusqlite = { version = "0.32", features = ["bundled"] }
 regex = "1"
 url = "2"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

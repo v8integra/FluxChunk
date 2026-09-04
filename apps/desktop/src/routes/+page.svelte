@@ -310,6 +310,34 @@
     pendingCrash = null;
   }
 
+  // --- local identity (spec section 6) ---
+
+  type LocalIdentityInfo = { public_key: string; display_name: string };
+
+  let identityPublicKey = $state("");
+  let identityDisplayName = $state("");
+
+  async function loadIdentity() {
+    try {
+      const info = await invoke<LocalIdentityInfo>("get_identity");
+      identityPublicKey = info.public_key;
+      identityDisplayName = info.display_name;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  loadIdentity();
+
+  async function changeDisplayName(name: string) {
+    try {
+      const info = await invoke<LocalIdentityInfo>("set_display_name", { displayName: name });
+      identityPublicKey = info.public_key;
+      identityDisplayName = info.display_name;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   // --- first-run tour (spec section 12) ---
 
   const TOUR_STEPS: TourStep[] = [
@@ -998,8 +1026,11 @@
     {autoCheckUpdates}
     {updateCheckUrl}
     {verboseLogging}
+    publicKey={identityPublicKey}
+    displayName={identityDisplayName}
     onChange={onSettingsChange}
     {onVerboseLoggingChange}
+    onDisplayNameChange={changeDisplayName}
     onClose={() => (showSettingsPanel = false)}
     onCheckNow={() => checkForUpdates(false)}
   />

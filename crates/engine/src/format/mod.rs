@@ -7,6 +7,7 @@
 pub mod apicol;
 pub mod apienv;
 pub mod apireq;
+pub mod apiworkspace;
 pub mod auth;
 pub mod blocks;
 pub mod vault;
@@ -14,6 +15,7 @@ pub mod vault;
 pub use apicol::{CollectionFile, CollectionMeta};
 pub use apienv::EnvironmentFile;
 pub use apireq::{ApiRequestFile, Assertion, Body, Meta};
+pub use apiworkspace::{Approver, WorkspaceFile, WorkspaceMeta};
 pub use auth::{ApiKeyPlacement, Auth, OAuth2Config};
 pub use blocks::RawBlock;
 pub use vault::VaultFile;

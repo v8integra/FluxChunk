@@ -1,4 +1,5 @@
 mod crash;
+mod identity;
 mod logging;
 mod settings;
 
@@ -12,6 +13,7 @@ use fluxchunk_engine::error::{categorize_request_error, EngineError};
 use fluxchunk_engine::format::{ApiKeyPlacement, ApiRequestFile, Auth, Body, EnvironmentFile, OAuth2Config, VaultFile};
 use fluxchunk_engine::history::{self, HistoryEntrySummary, HistoryStore};
 use fluxchunk_engine::http::{HttpClient, Method, OutgoingBody, OutgoingRequest};
+use fluxchunk_engine::identity::LocalIdentity;
 use fluxchunk_engine::import;
 use fluxchunk_engine::response::{self, BodyPreview, Cookie};
 use fluxchunk_engine::script::{self, ConsoleLevel, ScriptLimits, ScriptRequest, ScriptResponse};
@@ -50,6 +52,11 @@ struct AppState {
     collection: Mutex<CollectionState>,
     history: HistoryStore,
     settings_path: PathBuf,
+    identity_path: PathBuf,
+    /// This install's local keypair (spec section 6). Loaded once at
+    /// startup (generated on first launch if missing); `set_display_name`
+    /// is the only thing that ever mutates it afterward.
+    identity: Mutex<LocalIdentity>,
     /// Where the panic hook writes redacted crash reports (spec section
     /// 16) -- `check_pending_crash`/`read_crash_report` both read from
     /// here, and `read_crash_report` refuses any path outside it.
@@ -75,6 +82,37 @@ fn load_settings(state: tauri::State<AppState>) -> Result<Settings, String> {
 fn save_settings(state: tauri::State<AppState>, settings: Settings) -> Result<(), String> {
     logging::set_verbose(settings.verbose_logging);
     settings::save(&state.settings_path, &settings)
+}
+
+/// The local identity's public half only (spec section 6) -- what an
+/// `.apiworkspace` approver block references. `secret_key` never
+/// crosses IPC, same rule as vault secrets never reaching the UI.
+#[derive(Debug, Serialize)]
+struct LocalIdentityInfo {
+    public_key: String,
+    display_name: String,
+}
+
+impl From<&LocalIdentity> for LocalIdentityInfo {
+    fn from(identity: &LocalIdentity) -> Self {
+        LocalIdentityInfo { public_key: identity.public_key.clone(), display_name: identity.display_name.clone() }
+    }
+}
+
+#[tauri::command]
+fn get_identity(state: tauri::State<AppState>) -> LocalIdentityInfo {
+    LocalIdentityInfo::from(&*state.identity.lock().unwrap())
+}
+
+/// Renames this identity without touching its keypair -- the public key
+/// is what actually identifies an approver, the display name is just a
+/// label for humans reading an `.apiworkspace` diff.
+#[tauri::command]
+fn set_display_name(state: tauri::State<AppState>, display_name: String) -> Result<LocalIdentityInfo, String> {
+    let mut identity = state.identity.lock().unwrap();
+    identity.display_name = display_name;
+    identity::save(&state.identity_path, &identity)?;
+    Ok(LocalIdentityInfo::from(&*identity))
 }
 
 /// Called once at launch (spec section 16, "next launch: calm 'app
@@ -952,11 +990,15 @@ pub fn run() {
             crash::install_panic_hook(crash_dir.clone());
 
             let history = HistoryStore::open(&app_data_dir.join("history.sqlite3"))?;
+            let identity_path = app_data_dir.join("identity.toml");
+            let identity = identity::load_or_create(&identity_path)?;
             app.manage(AppState {
                 environment: Mutex::new(EnvironmentState::default()),
                 collection: Mutex::new(CollectionState::default()),
                 history,
                 settings_path,
+                identity_path,
+                identity: Mutex::new(identity),
                 crash_dir,
                 pending_update: tokio::sync::Mutex::new(None),
                 pending_update_bytes: tokio::sync::Mutex::new(None),
@@ -986,7 +1028,9 @@ pub fn run() {
             download_update,
             install_and_restart,
             check_pending_crash,
-            read_crash_report
+            read_crash_report,
+            get_identity,
+            set_display_name
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
